@@ -99,6 +99,8 @@ import {
   findSelectedRow,
   findSelectedButton,
   resolveSelectedTitle,
+  resolveVariableDisplayValue,
+  interpolateVars,
   matchesKeywordTrigger,
   isAutoAdvancing,
   isSuspending,
@@ -1037,7 +1039,7 @@ describe("send_list variable capture, condition evaluation, and customer-facing 
     );
   });
 
-  it("Step 12: interpolation {{vars.appointment_type}} renders the internal value dental_cleaning", async () => {
+  it("Test 1 (Flow Integration): downstream message node interpolates {{vars.appointment_type}} to display title Dental Cleaning", async () => {
     const { engineSendText } = await import("./meta-send");
     // Start at confirmed_node which sends "Appointment for {{vars.appointment_type}} confirmed!"
     h.state.activeRuns = [
@@ -1061,11 +1063,161 @@ describe("send_list variable capture, condition evaluation, and customer-facing 
       isFirstInboundMessage: false,
     });
 
-    // In confirmed_node, text should interpolate to "dental_cleaning"
+    // In confirmed_node, text should interpolate to "Dental Cleaning"
     expect(engineSendText).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: "Appointment for dental_cleaning confirmed!",
+        text: "Appointment for Dental Cleaning confirmed!",
       }),
     );
   });
 });
+
+describe("resolveVariableDisplayValue and interpolateVars (Tests 1-6)", () => {
+  const LIST_NODE_SERVICES = {
+    id: "n-list-1",
+    flow_id: "flow-1",
+    node_key: "select_service",
+    node_type: "send_list",
+    config: {
+      text: "Select a service",
+      button_label: "Services",
+      var_key: "appointment_type",
+      sections: [
+        {
+          title: "Treatments",
+          rows: [
+            { reply_id: "dental_cleaning", title: "Dental Cleaning", next_node_key: "done" },
+            { reply_id: "root_canal", title: "Root Canal", next_node_key: "done" },
+          ],
+        },
+      ],
+    },
+  };
+
+  const LIST_NODE_TIMINGS = {
+    id: "n-list-2",
+    flow_id: "flow-1",
+    node_key: "select_timing",
+    node_type: "send_list",
+    config: {
+      text: "Select timing",
+      button_label: "Timings",
+      var_key: "timing",
+      sections: [
+        {
+          title: "Available slots",
+          rows: [
+            { reply_id: "morning", title: "Morning", next_node_key: "done" },
+            { reply_id: "afternoon", title: "Afternoon", next_node_key: "done" },
+            { reply_id: "evening", title: "Evening", next_node_key: "done" },
+          ],
+        },
+      ],
+    },
+  };
+
+  const NO_VAR_LIST_NODE = {
+    id: "n-list-3",
+    flow_id: "flow-1",
+    node_key: "select_faq",
+    node_type: "send_list",
+    config: {
+      text: "FAQ",
+      button_label: "Questions",
+      sections: [
+        {
+          rows: [{ reply_id: "faq_hours", title: "Opening Hours", next_node_key: "done" }],
+        },
+      ],
+    },
+  };
+
+  const BUTTONS_NODE = {
+    id: "n-btn-1",
+    flow_id: "flow-1",
+    node_key: "choose_btn",
+    node_type: "send_buttons",
+    config: {
+      text: "Confirm?",
+      buttons: [
+        { reply_id: "yes", title: "Yes, Confirm", next_node_key: "done" },
+        { reply_id: "no", title: "No, Cancel", next_node_key: "done" },
+      ],
+    },
+  };
+
+  const nodes = [LIST_NODE_SERVICES, LIST_NODE_TIMINGS, NO_VAR_LIST_NODE, BUTTONS_NODE];
+
+  it("Test 1: Given appointment_type = dental_cleaning, template renders Dental Cleaning", () => {
+    const template =
+      "Great! You're looking to book a {{vars.appointment_type}}\n\nPlease select a convenient day";
+    const vars = { appointment_type: "dental_cleaning" };
+    const rendered = interpolateVars(template, vars, nodes);
+
+    expect(rendered).toBe(
+      "Great! You're looking to book a Dental Cleaning\n\nPlease select a convenient day",
+    );
+    // Raw vars remain unchanged
+    expect(vars.appointment_type).toBe("dental_cleaning");
+  });
+
+  it("Test 2: Condition appointment_type equals dental_cleaning still evaluates TRUE", () => {
+    const rawValue = "dental_cleaning";
+    const result = evaluateConditionPredicate({
+      operator: "equals",
+      subjectValue: rawValue,
+      configValue: "dental_cleaning",
+    });
+    expect(result).toBe(true);
+
+    // Negative check: comparing against the display title evaluates FALSE
+    const falseResult = evaluateConditionPredicate({
+      operator: "equals",
+      subjectValue: rawValue,
+      configValue: "Dental Cleaning",
+    });
+    expect(falseResult).toBe(false);
+  });
+
+  it("Test 3: Existing ordinary variable name = Ketan renders {{vars.name}} → Ketan", () => {
+    const template = "Hello {{vars.name}}, welcome to {{vars.clinic}}!";
+    const vars = { name: "Ketan", clinic: "Tooth Care" };
+    const rendered = interpolateVars(template, vars, nodes);
+
+    expect(rendered).toBe("Hello Ketan, welcome to Tooth Care!");
+  });
+
+  it("Test 4: Multiple send_list variables render respective display titles", () => {
+    const template =
+      "Appointment for {{vars.appointment_type}} confirmed for {{vars.timing}}!";
+    const vars = {
+      appointment_type: "dental_cleaning",
+      timing: "morning",
+    };
+    const rendered = interpolateVars(template, vars, nodes);
+
+    expect(rendered).toBe("Appointment for Dental Cleaning confirmed for Morning!");
+    // Stored variables remain internal identifiers
+    expect(vars).toEqual({
+      appointment_type: "dental_cleaning",
+      timing: "morning",
+    });
+  });
+
+  it("Test 5: A send_list without var_key does not interfere with interpolation", () => {
+    const template = "Information: {{vars.faq}}";
+    const vars = { faq: "faq_hours" };
+    const rendered = interpolateVars(template, vars, nodes);
+
+    expect(rendered).toBe("Information: faq_hours");
+  });
+
+  it("Test 6: Existing send_buttons behavior remains unchanged", () => {
+    const template = "Choice was: {{vars.choice}}";
+    const vars = { choice: "yes" };
+    const rendered = interpolateVars(template, vars, nodes);
+
+    expect(rendered).toBe("Choice was: yes");
+  });
+});
+

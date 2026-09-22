@@ -121,6 +121,91 @@ export function matchReplyId(
   return null;
 }
 
+export type FlowNodesContainer =
+  | Map<string, { node_type: string; config: Record<string, unknown> }>
+  | Array<{ node_type: string; config: Record<string, unknown> }>
+  | Iterable<{ node_type: string; config: Record<string, unknown> }>;
+
+/**
+ * Resolves the customer-facing display value for a variable.
+ * If the variable was captured from a `send_list` node, resolves the internal
+ * `reply_id` to the matching list row's `title`.
+ * For all other variables (or if no matching row is found), returns the raw value as a string.
+ */
+export function resolveVariableDisplayValue(
+  key: string,
+  value: unknown,
+  nodes?: FlowNodesContainer,
+): string {
+  if (value === undefined || value === null) return "";
+  const rawStr = String(value);
+
+  if (nodes) {
+    const iterable =
+      nodes instanceof Map
+        ? nodes.values()
+        : Array.isArray(nodes)
+          ? nodes
+          : (nodes as Iterable<{ node_type: string; config: Record<string, unknown> }>);
+
+    for (const node of iterable) {
+      if (node.node_type === "send_list") {
+        const cfg = node.config as unknown as SendListNodeConfig;
+        if (cfg?.var_key?.trim() === key) {
+          const row = findSelectedRow(node, rawStr);
+          if (row?.title?.trim()) {
+            return row.title.trim();
+          }
+        }
+      }
+    }
+  }
+
+  return rawStr;
+}
+
+/**
+ * `{{vars.foo}}` interpolation. Used by send_message, send_media, collect_input,
+ * send_buttons, and send_list.
+ *
+ * When interpolating variables originating from a `send_list` node, this
+ * resolves to the row's customer-facing title (e.g. "Dental Cleaning")
+ * while the internal variable in `flow_runs.vars` remains the internal
+ * `reply_id` ("dental_cleaning").
+ *
+ * Missing vars render as empty string — the same behavior as the automations engine.
+ */
+export function interpolateVars(
+  template: string,
+  vars: Record<string, unknown>,
+  nodes?: FlowNodesContainer,
+): string {
+  if (!template) return "";
+  return template.replace(/\{\{vars\.([a-zA-Z0-9_]+)\}\}/g, (_, key) => {
+    const v = vars[key];
+    return resolveVariableDisplayValue(key, v, nodes);
+  });
+}
+
+/**
+ * `interpolateVars` for optional config fields (header_text, footer_text,
+ * list section titles, row descriptions). An absent field stays absent
+ * — `interpolateVars(undefined)` would return "" and meta-api treats
+ * header/footer/description by truthiness, so "" is harmless there, but
+ * keeping `undefined` means the payload we log and send matches what
+ * the author configured rather than sprouting empty strings.
+ */
+export function interpolateOptionalVars(
+  template: string | undefined,
+  vars: Record<string, unknown>,
+  nodes?: FlowNodesContainer,
+): string | undefined {
+  return template === undefined || template === null
+    ? undefined
+    : interpolateVars(template, vars, nodes);
+}
+
+
 /**
  * Case-insensitive contains/exact match against a list of keywords.
  * Used by the trigger evaluator. Stable enough that the v3 builder
@@ -422,6 +507,7 @@ async function sendButtonsAndSuspend(
   db: AdminClient,
   run: FlowRunRow,
   node: FlowNodeRow,
+  nodes?: FlowNodesContainer,
 ): Promise<{ outcome: "advanced"; node_key: string }> {
   const cfg = node.config as unknown as SendButtonsNodeConfig;
   // Every customer-visible string is interpolated against run.vars —
@@ -436,12 +522,12 @@ async function sendButtonsAndSuspend(
     userId: run.user_id,
     conversationId: run.conversation_id!,
     contactId: run.contact_id!,
-    bodyText: interpolateVars(cfg.text, run.vars),
-    headerText: interpolateOptionalVars(cfg.header_text, run.vars),
-    footerText: interpolateOptionalVars(cfg.footer_text, run.vars),
+    bodyText: interpolateVars(cfg.text, run.vars, nodes),
+    headerText: interpolateOptionalVars(cfg.header_text, run.vars, nodes),
+    footerText: interpolateOptionalVars(cfg.footer_text, run.vars, nodes),
     buttons: cfg.buttons.map((b) => ({
       id: b.reply_id,
-      title: interpolateVars(b.title, run.vars),
+      title: interpolateVars(b.title, run.vars, nodes),
     })),
   });
   await logEvent(db, run.id, "message_sent", node.node_key, {
@@ -468,6 +554,7 @@ async function sendListAndSuspend(
   db: AdminClient,
   run: FlowRunRow,
   node: FlowNodeRow,
+  nodes?: FlowNodesContainer,
 ): Promise<{ outcome: "advanced"; node_key: string }> {
   const cfg = node.config as unknown as SendListNodeConfig;
   // See sendButtonsAndSuspend — interpolate every visible string,
@@ -477,16 +564,16 @@ async function sendListAndSuspend(
     userId: run.user_id,
     conversationId: run.conversation_id!,
     contactId: run.contact_id!,
-    bodyText: interpolateVars(cfg.text, run.vars),
-    buttonLabel: interpolateVars(cfg.button_label, run.vars),
-    headerText: interpolateOptionalVars(cfg.header_text, run.vars),
-    footerText: interpolateOptionalVars(cfg.footer_text, run.vars),
+    bodyText: interpolateVars(cfg.text, run.vars, nodes),
+    buttonLabel: interpolateVars(cfg.button_label, run.vars, nodes),
+    headerText: interpolateOptionalVars(cfg.header_text, run.vars, nodes),
+    footerText: interpolateOptionalVars(cfg.footer_text, run.vars, nodes),
     sections: cfg.sections.map((s) => ({
-      title: interpolateOptionalVars(s.title, run.vars),
+      title: interpolateOptionalVars(s.title, run.vars, nodes),
       rows: s.rows.map((r) => ({
         id: r.reply_id,
-        title: interpolateVars(r.title, run.vars),
-        description: interpolateOptionalVars(r.description, run.vars),
+        title: interpolateVars(r.title, run.vars, nodes),
+        description: interpolateOptionalVars(r.description, run.vars, nodes),
       })),
     })),
   });
@@ -585,37 +672,6 @@ async function evaluateConditionNode(
   });
 }
 
-/**
- * Tiny `{{vars.foo}}` interpolation. Used by send_message + collect_input
- * prompt text so a captured `name` can show up in the next prompt
- * ("Thanks {{vars.name}}, what's your email?"). Missing vars render as
- * empty string — the same behavior as the automations engine.
- */
-function interpolateVars(template: string, vars: Record<string, unknown>): string {
-  if (!template) return "";
-  return template.replace(/\{\{vars\.([a-zA-Z0-9_]+)\}\}/g, (_, key) => {
-    const v = vars[key];
-    return v === undefined || v === null ? "" : String(v);
-  });
-}
-
-/**
- * `interpolateVars` for optional config fields (header_text, footer_text,
- * list section titles, row descriptions). An absent field stays absent
- * — `interpolateVars(undefined)` would return "" and meta-api treats
- * header/footer/description by truthiness, so "" is harmless there, but
- * keeping `undefined` means the payload we log and send matches what
- * the author configured rather than sprouting empty strings.
- */
-function interpolateOptionalVars(
-  template: string | undefined,
-  vars: Record<string, unknown>,
-): string | undefined {
-  return template === undefined || template === null
-    ? undefined
-    : interpolateVars(template, vars);
-}
-
 async function endRun(
   db: AdminClient,
   runId: string,
@@ -680,7 +736,7 @@ async function advanceFromNodeKey(
     userId: run.user_id,
           conversationId: run.conversation_id!,
           contactId: run.contact_id!,
-          text: interpolateVars(cfg.text, run.vars),
+          text: interpolateVars(cfg.text, run.vars, nodes),
         });
         await logEvent(db, run.id, "message_sent", node.node_key, {
           node_type: "send_message",
@@ -708,7 +764,7 @@ async function advanceFromNodeKey(
           kind: cfg.media_type,
           link: cfg.media_url,
           caption: cfg.caption
-            ? interpolateVars(cfg.caption, run.vars)
+            ? interpolateVars(cfg.caption, run.vars, nodes)
             : undefined,
           filename: cfg.filename,
         });
@@ -738,7 +794,7 @@ async function advanceFromNodeKey(
     userId: run.user_id,
           conversationId: run.conversation_id!,
           contactId: run.contact_id!,
-          text: interpolateVars(cfg.prompt_text, run.vars),
+          text: interpolateVars(cfg.prompt_text, run.vars, nodes),
         });
         await logEvent(db, run.id, "message_sent", node.node_key, {
           node_type: "collect_input",
@@ -840,7 +896,7 @@ async function advanceFromNodeKey(
       // console.error'd and left the run active + stuck on the prior
       // node with nothing in flow_run_events.
       try {
-        await sendButtonsAndSuspend(db, run, node);
+        await sendButtonsAndSuspend(db, run, node, nodes);
       } catch (err) {
         await logEvent(db, run.id, "error", node.node_key, {
           reason: "send_buttons_failed",
@@ -865,7 +921,7 @@ async function advanceFromNodeKey(
     }
     if (node.node_type === "send_list") {
       try {
-        await sendListAndSuspend(db, run, node);
+        await sendListAndSuspend(db, run, node, nodes);
       } catch (err) {
         await logEvent(db, run.id, "error", node.node_key, {
           reason: "send_list_failed",
@@ -1216,9 +1272,9 @@ async function handleReplyForActiveRun(
     // still has the original prompt on screen and can retry.
     try {
       if (currentNode.node_type === "send_buttons") {
-        await sendButtonsAndSuspend(db, run, currentNode);
+        await sendButtonsAndSuspend(db, run, currentNode, nodes);
       } else if (currentNode.node_type === "send_list") {
-        await sendListAndSuspend(db, run, currentNode);
+        await sendListAndSuspend(db, run, currentNode, nodes);
       } else if (currentNode.node_type === "collect_input") {
         // Customer typed something we couldn't accept (empty after trim,
         // or var_key missing — rare). Re-send the prompt so they try again.
@@ -1228,7 +1284,7 @@ async function handleReplyForActiveRun(
           userId: run.user_id,
           conversationId: run.conversation_id!,
           contactId: run.contact_id!,
-          text: interpolateVars(cfg.prompt_text, run.vars),
+          text: interpolateVars(cfg.prompt_text, run.vars, nodes),
         });
       }
     } catch (err) {
