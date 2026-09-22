@@ -1016,12 +1016,39 @@ async function handleReplyForActiveRun(
   //
   // Everything else falls through to the fallback policy below.
   let matched: string | null = null;
+
   if (
     message.kind === "interactive_reply" &&
     (currentNode.node_type === "send_buttons" ||
       currentNode.node_type === "send_list")
   ) {
     matched = matchReplyId(currentNode, message.reply_id);
+
+    // Save the selected button/list value into flow_runs.vars
+    if (matched && currentNode.node_type === "send_list") {
+      const cfg = currentNode.config as unknown as SendListNodeConfig;
+
+      if (cfg.var_key) {
+        const newVars = {
+          ...run.vars,
+          [cfg.var_key]: message.reply_id,
+        };
+
+        const { error: varErr } = await db
+          .from("flow_runs")
+          .update({
+            vars: newVars,
+            reprompt_count: 0,
+          })
+          .eq("id", run.id);
+
+        if (!varErr) {
+          // Keep in-memory vars in sync for downstream condition nodes
+          run.vars = newVars;
+          run.reprompt_count = 0;
+        }
+      }
+    }
   } else if (
     message.kind === "text" &&
     currentNode.node_type === "collect_input"

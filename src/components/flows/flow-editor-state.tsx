@@ -149,6 +149,7 @@ export function defaultConfigFor(type: NodeType): Record<string, unknown> {
       return {
         text: "",
         button_label: "View options",
+        var_key: "",
         sections: [
           {
             title: "",

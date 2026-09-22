@@ -56,6 +56,7 @@ export interface SendListNodeConfig {
   button_label: string;
   header_text?: string;
   footer_text?: string;
+  var_key?: string;
   /** 1-10 rows TOTAL across sections; cap enforced in meta-api. */
   sections: Array<{
     title?: string;
