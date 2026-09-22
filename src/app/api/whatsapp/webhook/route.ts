@@ -728,6 +728,7 @@ async function processMessage(
   // Resolve swipe-reply context if present. A missing parent is fine —
   // we just store NULL and the UI renders the message without a quote.
   let replyToInternalId: string | null = null
+  let displayContentText = contentText
   if (message.context?.id) {
     replyToInternalId = await lookupInternalIdByMetaId(
       message.context.id,
@@ -738,6 +739,44 @@ async function processMessage(
         '[webhook] reply context parent not found:',
         message.context.id
       )
+    }
+
+    // Step 2 fallback: If interactive reply title is missing or fell back to reply_id,
+    // resolve the visible row/button title from the parent message's interactive_payload.
+    if (
+      interactiveReplyId &&
+      (!displayContentText ||
+        displayContentText === interactiveReplyId ||
+        displayContentText === '[Interactive reply]')
+    ) {
+      const { data: parentMsg } = await supabaseAdmin()
+        .from('messages')
+        .select('interactive_payload')
+        .eq('message_id', message.context.id)
+        .eq('conversation_id', conversation.id)
+        .maybeSingle()
+
+      if (parentMsg?.interactive_payload) {
+        const payload = parentMsg.interactive_payload as {
+          kind?: string
+          sections?: Array<{ rows?: Array<{ id: string; title: string }> }>
+          buttons?: Array<{ id: string; title: string }>
+        }
+        if (payload.kind === 'list' && Array.isArray(payload.sections)) {
+          for (const s of payload.sections) {
+            const r = s.rows?.find((row) => row.id === interactiveReplyId)
+            if (r?.title?.trim()) {
+              displayContentText = r.title.trim()
+              break
+            }
+          }
+        } else if (payload.kind === 'buttons' && Array.isArray(payload.buttons)) {
+          const b = payload.buttons.find((btn) => btn.id === interactiveReplyId)
+          if (b?.title?.trim()) {
+            displayContentText = b.title.trim()
+          }
+        }
+      }
     }
   }
 
@@ -790,7 +829,7 @@ async function processMessage(
         conversation_id: conversation.id,
         sender_type: 'customer',
         content_type: contentType,
-        content_text: contentText,
+        content_text: displayContentText,
         media_url: mediaUrl,
         // Meta's MIME type for the attachment (migration 039). Was
         // discarded before, which forced the download path to guess an
@@ -838,7 +877,7 @@ async function processMessage(
     'bump_conversation_on_inbound',
     {
       p_conversation_id: conversation.id,
-      p_last_message_text: contentText || `[${message.type}]`,
+      p_last_message_text: displayContentText || `[${message.type}]`,
     }
   )
 
@@ -886,12 +925,12 @@ async function processMessage(
         ? {
             kind: 'interactive_reply',
             reply_id: interactiveReplyId,
-            reply_title: contentText ?? '',
+            reply_title: displayContentText ?? '',
             meta_message_id: message.id,
           }
         : {
             kind: 'text',
-            text: contentText ?? message.text?.body ?? '',
+            text: displayContentText ?? message.text?.body ?? '',
             meta_message_id: message.id,
           },
     isFirstInboundMessage,
@@ -903,7 +942,7 @@ async function processMessage(
   // message all exist before any step — including send_message — runs.
   // Fire-and-forget: a slow or failing automation must not block the
   // webhook's 200 OK response to Meta.
-  const inboundText = contentText ?? message.text?.body ?? ''
+  const inboundText = displayContentText ?? message.text?.body ?? ''
   const automationTriggers: (
     | 'new_contact_created'
     | 'first_inbound_message'
@@ -983,7 +1022,7 @@ async function processMessage(
     contact_id: contactRecord.id,
     whatsapp_message_id: message.id,
     content_type: contentType,
-    text: contentText,
+    text: displayContentText,
   })
 }
 
@@ -1156,7 +1195,7 @@ async function parseMessageContent(
       if (reply?.id) {
         return {
           ...empty,
-          contentText: reply.title || reply.id,
+          contentText: reply.title?.trim() || reply.id,
           interactiveReplyId: reply.id,
         }
       }

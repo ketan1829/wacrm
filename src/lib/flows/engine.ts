@@ -69,22 +69,54 @@ import {
  * Given a node + the customer's reply_id, return the next_node_key
  * to advance to, or `null` if no option matches.
  */
+export function findSelectedRow(
+  node: { node_type: string; config: Record<string, unknown> },
+  reply_id: string,
+): { reply_id: string; title: string; description?: string; next_node_key: string } | null {
+  if (node.node_type === "send_list") {
+    const cfg = node.config as unknown as SendListNodeConfig;
+    for (const section of cfg.sections ?? []) {
+      const hit = section.rows?.find((r) => r.reply_id === reply_id);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
+export function findSelectedButton(
+  node: { node_type: string; config: Record<string, unknown> },
+  reply_id: string,
+): { reply_id: string; title: string; next_node_key: string } | null {
+  if (node.node_type === "send_buttons") {
+    const cfg = node.config as unknown as SendButtonsNodeConfig;
+    const hit = cfg.buttons?.find((b) => b.reply_id === reply_id);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+export function resolveSelectedTitle(
+  node: { node_type: string; config: Record<string, unknown> },
+  reply_id: string,
+): string | null {
+  if (node.node_type === "send_list") {
+    return findSelectedRow(node, reply_id)?.title ?? null;
+  }
+  if (node.node_type === "send_buttons") {
+    return findSelectedButton(node, reply_id)?.title ?? null;
+  }
+  return null;
+}
+
 export function matchReplyId(
   node: { node_type: string; config: Record<string, unknown> },
   reply_id: string,
 ): string | null {
   if (node.node_type === "send_buttons") {
-    const cfg = node.config as unknown as SendButtonsNodeConfig;
-    const hit = cfg.buttons?.find((b) => b.reply_id === reply_id);
-    return hit?.next_node_key ?? null;
+    return findSelectedButton(node, reply_id)?.next_node_key ?? null;
   }
   if (node.node_type === "send_list") {
-    const cfg = node.config as unknown as SendListNodeConfig;
-    for (const section of cfg.sections ?? []) {
-      const hit = section.rows?.find((r) => r.reply_id === reply_id);
-      if (hit) return hit.next_node_key;
-    }
-    return null;
+    return findSelectedRow(node, reply_id)?.next_node_key ?? null;
   }
   return null;
 }
@@ -979,20 +1011,6 @@ async function handleReplyForActiveRun(
   message: ParsedInbound,
   nodes: Map<string, FlowNodeRow>,
 ): Promise<DispatchInboundResult> {
-  // Note: we intentionally do NOT persist the raw customer text. A
-  // `collect_input` prompt that asks "what's your card number?" would
-  // otherwise leave the PAN sitting in flow_run_events.payload forever,
-  // visible to anyone with access to the runs viewer or the events
-  // table. Length is enough for "did they actually reply?" debugging;
-  // for the captured value itself, the `node_entered` event already
-  // records `captured_key` + `captured_length` after the var is stored.
-  await logEvent(db, run.id, "reply_received", run.current_node_key, {
-    meta_message_id: message.meta_message_id,
-    reply_kind: message.kind,
-    reply_id: message.kind === "interactive_reply" ? message.reply_id : null,
-    text_length: message.kind === "text" ? message.text.length : null,
-  });
-
   if (!run.current_node_key) {
     // Defensive — a run with status='active' but no current node is
     // malformed. Fail the run rather than spin.
@@ -1010,6 +1028,33 @@ async function handleReplyForActiveRun(
     return { consumed: true, flow_run_id: run.id, outcome: "no_match" };
   }
 
+  // Resolve customer-facing title for interactive replies if not already resolved
+  const resolvedReplyTitle =
+    message.kind === "interactive_reply"
+      ? (message.reply_title && message.reply_title !== message.reply_id
+          ? message.reply_title
+          : resolveSelectedTitle(currentNode, message.reply_id) ?? message.reply_title ?? null)
+      : null;
+
+  if (resolvedReplyTitle && message.kind === "interactive_reply") {
+    message.reply_title = resolvedReplyTitle;
+  }
+
+  // Note: we intentionally do NOT persist the raw customer text. A
+  // `collect_input` prompt that asks "what's your card number?" would
+  // otherwise leave the PAN sitting in flow_run_events.payload forever,
+  // visible to anyone with access to the runs viewer or the events
+  // table. Length is enough for "did they actually reply?" debugging;
+  // for the captured value itself, the `node_entered` event already
+  // records `captured_key` + `captured_length` after the var is stored.
+  await logEvent(db, run.id, "reply_received", run.current_node_key, {
+    meta_message_id: message.meta_message_id,
+    reply_kind: message.kind,
+    reply_id: message.kind === "interactive_reply" ? message.reply_id : null,
+    ...(resolvedReplyTitle ? { reply_title: resolvedReplyTitle } : {}),
+    text_length: message.kind === "text" ? message.text.length : null,
+  });
+
   // Two ways a reply can advance:
   //   1. Interactive button/list tap on a send_buttons/send_list node.
   //   2. Text reply on a collect_input node — capture into vars.
@@ -1024,28 +1069,69 @@ async function handleReplyForActiveRun(
   ) {
     matched = matchReplyId(currentNode, message.reply_id);
 
-    // Save the selected button/list value into flow_runs.vars
-    if (matched && currentNode.node_type === "send_list") {
-      const cfg = currentNode.config as unknown as SendListNodeConfig;
+    if (matched) {
+      // Step 8: Database message display repair
+      // If the inbound message was inserted with the raw reply_id (or placeholder),
+      // update content_text and conversation last_message_text to the human-readable title.
+      if (resolvedReplyTitle && message.meta_message_id) {
+        const { data: existingMsg } = await db
+          .from("messages")
+          .select("content_text")
+          .eq("message_id", message.meta_message_id)
+          .maybeSingle();
 
-      if (cfg.var_key) {
-        const newVars = {
-          ...run.vars,
-          [cfg.var_key]: message.reply_id,
-        };
+        const currentContent = (existingMsg as { content_text?: string } | null)?.content_text;
+        if (
+          !currentContent ||
+          currentContent === message.reply_id ||
+          currentContent === "[Interactive reply]"
+        ) {
+          await db
+            .from("messages")
+            .update({ content_text: resolvedReplyTitle })
+            .eq("message_id", message.meta_message_id);
 
-        const { error: varErr } = await db
-          .from("flow_runs")
-          .update({
-            vars: newVars,
-            reprompt_count: 0,
-          })
-          .eq("id", run.id);
+          if (run.conversation_id) {
+            await db
+              .from("conversations")
+              .update({
+                last_message_text: resolvedReplyTitle,
+                updated_at: new Date().toISOString(),
+              })
+              .eq("id", run.conversation_id);
+          }
+        }
+      }
 
-        if (!varErr) {
-          // Keep in-memory vars in sync for downstream condition nodes
-          run.vars = newVars;
-          run.reprompt_count = 0;
+      // Save the selected list value into flow_runs.vars
+      if (currentNode.node_type === "send_list") {
+        const cfg = currentNode.config as unknown as SendListNodeConfig;
+
+        if (cfg.var_key && cfg.var_key.trim()) {
+          const varKey = cfg.var_key.trim();
+          const newVars = {
+            ...run.vars,
+            [varKey]: message.reply_id,
+          };
+
+          const { error: varErr } = await db
+            .from("flow_runs")
+            .update({
+              vars: newVars,
+              reprompt_count: 0,
+            })
+            .eq("id", run.id);
+
+          if (!varErr) {
+            // Keep in-memory vars in sync for downstream condition nodes
+            run.vars = newVars;
+            run.reprompt_count = 0;
+            await logEvent(db, run.id, "node_entered", currentNode.node_key, {
+              captured_key: varKey,
+              captured_value: message.reply_id,
+              ...(resolvedReplyTitle ? { selected_title: resolvedReplyTitle } : {}),
+            });
+          }
         }
       }
     }

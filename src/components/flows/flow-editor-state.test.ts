@@ -108,10 +108,12 @@ describe("defaultConfigFor", () => {
     expect(cfg.buttons?.[0].reply_id).toBeTruthy();
   });
 
-  it("send_list default has at least one section with one row", () => {
+  it("send_list default has at least one section with one row and empty var_key", () => {
     const cfg = defaultConfigFor("send_list") as {
+      var_key?: string;
       sections?: Array<{ rows: unknown[] }>;
     };
+    expect(cfg.var_key).toBe("");
     expect(cfg.sections?.length).toBeGreaterThan(0);
     expect(cfg.sections?.[0].rows.length).toBeGreaterThan(0);
   });

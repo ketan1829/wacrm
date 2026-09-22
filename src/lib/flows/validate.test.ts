@@ -385,6 +385,59 @@ describe("validateFlowForActivation — nodes", () => {
     ).toBe(true);
   });
 
+  it("validates send_list var_key format when provided, allows empty or omitted", () => {
+    const makeNodes = (var_key?: string) => [
+      { node_key: "s", node_type: "start", config: { next_node_key: "l" } },
+      {
+        node_key: "l",
+        node_type: "send_list",
+        config: {
+          text: "Pick an option",
+          button_label: "View options",
+          ...(var_key !== undefined ? { var_key } : {}),
+          sections: [
+            {
+              rows: [{ reply_id: "r1", title: "Option 1", next_node_key: "h" }],
+            },
+          ],
+        },
+      },
+      { node_key: "h", node_type: "handoff", config: {} },
+    ];
+
+    // Valid alphanumeric + underscore
+    const validIssues = validateFlowForActivation(
+      { ...validFlow, entry_node_id: "s" },
+      makeNodes("appointment_type"),
+    );
+    expect(validIssues.some((i) => i.field === "var_key")).toBe(false);
+
+    // Invalid characters (hyphen / spaces)
+    const invalidIssues = validateFlowForActivation(
+      { ...validFlow, entry_node_id: "s" },
+      makeNodes("invalid-key!"),
+    );
+    expect(
+      invalidIssues.some(
+        (i) => i.node_key === "l" && i.field === "var_key" && i.severity === "error",
+      ),
+    ).toBe(true);
+
+    // Empty string passes (backward compatibility)
+    const emptyIssues = validateFlowForActivation(
+      { ...validFlow, entry_node_id: "s" },
+      makeNodes(""),
+    );
+    expect(emptyIssues.some((i) => i.field === "var_key")).toBe(false);
+
+    // Omitted var_key passes
+    const omittedIssues = validateFlowForActivation(
+      { ...validFlow, entry_node_id: "s" },
+      makeNodes(undefined),
+    );
+    expect(omittedIssues.some((i) => i.field === "var_key")).toBe(false);
+  });
+
   it("warns about unreachable nodes", () => {
     const nodes = [
       { node_key: "s", node_type: "start", config: { next_node_key: "h" } },

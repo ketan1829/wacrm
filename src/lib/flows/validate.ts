@@ -403,6 +403,7 @@ function validateNode(
       const cfg = node.config as {
         text?: string;
         button_label?: string;
+        var_key?: string;
         sections?: Array<{
           title?: string;
           rows?: Array<{
@@ -413,6 +414,17 @@ function validateNode(
           }>;
         }>;
       };
+      if (cfg.var_key && cfg.var_key.trim()) {
+        if (!/^[a-zA-Z0-9_]+$/.test(cfg.var_key)) {
+          issues.push({
+            severity: "error",
+            scope: "node",
+            node_key: node.node_key,
+            field: "var_key",
+            message: `var_key "${cfg.var_key}" must be alphanumeric and underscore only.`,
+          });
+        }
+      }
       if (!cfg.text?.trim()) {
         issues.push({
           severity: "error",
