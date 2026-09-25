@@ -484,7 +484,10 @@ export type AutomationTriggerType =
   | 'time_based'
   /** Customer tapped a reply button / list row whose id matches; lets
    *  multi-step menus be chained across automations. */
-  | 'interactive_reply';
+  | 'interactive_reply'
+  | 'appointment_created'
+  | 'appointment_reminder'
+  | 'appointment_cancelled';
 
 export type AutomationStepType =
   | 'send_message'
@@ -699,3 +702,23 @@ export interface QuickReply {
   created_at: string;
   updated_at: string;
 }
+
+// ============================================================
+// Appointments / Calendar module
+// ============================================================
+
+export type {
+  AppointmentStatus,
+  AppointmentSource,
+  AppointmentService,
+  AppointmentStaff,
+  AppointmentStaffService,
+  AppointmentAvailability,
+  AppointmentAvailabilityException,
+  Appointment,
+  TimeSlot,
+  AvailableDate,
+  CreateAppointmentInput,
+  RescheduleAppointmentInput,
+  CancelAppointmentInput,
+} from '@/lib/appointments/types';

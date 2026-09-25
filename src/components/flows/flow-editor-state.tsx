@@ -184,6 +184,14 @@ export function defaultConfigFor(type: NodeType): Record<string, unknown> {
       };
     case "set_tag":
       return { mode: "add", tag_id: "", next_node_key: "" };
+    case "book_appointment":
+      return {
+        service_id: "",
+        staff_id: "",
+        date_selection_days: 14,
+        confirmation_message: "",
+        next_node_key: "",
+      };
     case "handoff":
       return { note: "" };
     case "end":

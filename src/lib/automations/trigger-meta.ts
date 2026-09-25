@@ -35,6 +35,15 @@ export const TRIGGER_META: Record<AutomationTriggerType, TriggerMeta> = {
   interactive_reply: {
     pillClass: 'border-pink-500/30 bg-pink-500/10 text-pink-300',
   },
+  appointment_created: {
+    pillClass: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
+  },
+  appointment_reminder: {
+    pillClass: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
+  },
+  appointment_cancelled: {
+    pillClass: 'border-red-500/30 bg-red-500/10 text-red-300',
+  },
 }
 
 export function isKnownTrigger(t: string): t is AutomationTriggerType {

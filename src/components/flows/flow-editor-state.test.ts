@@ -90,6 +90,7 @@ describe("defaultConfigFor", () => {
     "collect_input",
     "condition",
     "set_tag",
+    "book_appointment",
     "handoff",
     "end",
   ];
@@ -128,6 +129,11 @@ describe("defaultConfigFor", () => {
     // Mirrors the regex in validate.ts: alphanumeric + underscore,
     // starts with letter or underscore.
     expect(cfg.var_key).toMatch(/^[a-zA-Z_][a-zA-Z0-9_]*$/);
+  });
+
+  it("book_appointment defaults to 14 days window", () => {
+    const cfg = defaultConfigFor("book_appointment") as { date_selection_days?: number };
+    expect(cfg.date_selection_days).toBe(14);
   });
 
   it("end's default is an empty object (terminal — no config)", () => {

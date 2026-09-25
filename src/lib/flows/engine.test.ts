@@ -335,6 +335,7 @@ describe("node classification helpers", () => {
     expect(isSuspending("send_buttons")).toBe(true);
     expect(isSuspending("send_list")).toBe(true);
     expect(isSuspending("collect_input")).toBe(true);
+    expect(isSuspending("book_appointment")).toBe(true);
     expect(isSuspending("start")).toBe(false);
     expect(isSuspending("send_message")).toBe(false);
     expect(isSuspending("condition")).toBe(false);
@@ -361,6 +362,7 @@ describe("node classification helpers", () => {
       "collect_input",
       "condition",
       "set_tag",
+      "book_appointment",
       "handoff",
       "end",
     ];
@@ -1218,6 +1220,44 @@ describe("resolveVariableDisplayValue and interpolateVars (Tests 1-6)", () => {
     const rendered = interpolateVars(template, vars, nodes);
 
     expect(rendered).toBe("Choice was: yes");
+  });
+
+  it("Test 7: Resolves appointment variables (service, staff, date, time, id)", () => {
+    const template =
+      "Your {{appointment.service}} with {{appointment.staff}} is booked for {{appointment.date}} at {{appointment.time}}! Ref: {{appointment.id}}";
+    const vars = {
+      appointment_service: "Dental Cleaning",
+      appointment_staff: "Dr. Smith",
+      appointment_date: "2026-09-25",
+      appointment_time: "10:30 AM",
+      appointment_id: "apt-12345",
+    };
+    const rendered = interpolateVars(template, vars, nodes);
+
+    expect(rendered).toBe(
+      "Your Dental Cleaning with Dr. Smith is booked for 2026-09-25 at 10:30 AM! Ref: apt-12345",
+    );
+  });
+
+  it("Test 8: Resolves contact variables and nested objects", () => {
+    const template = "Hello {{contact.name}}, thanks for reaching out!";
+    const vars = {
+      contact_name: "Alice Johnson",
+    };
+    const rendered = interpolateVars(template, vars, nodes);
+
+    expect(rendered).toBe("Hello Alice Johnson, thanks for reaching out!");
+  });
+
+  it("Test 9: Handles spaces inside mustache braces", () => {
+    const template = "Booking for {{ appointment.service }} on {{ appointment.date }}";
+    const vars = {
+      appointment_service: "Consultation",
+      appointment_date: "2026-10-01",
+    };
+    const rendered = interpolateVars(template, vars, nodes);
+
+    expect(rendered).toBe("Booking for Consultation on 2026-10-01");
   });
 });
 

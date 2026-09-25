@@ -6,7 +6,8 @@ import { addContactTag, deleteContactTag } from '@/lib/contacts/tag-api';
 import { useAuth } from '@/hooks/use-auth';
 import { formatCurrency } from '@/lib/currency';
 import { toast } from 'sonner';
-import type { Contact, Tag, ContactTag, ContactNote, CustomField, ContactCustomValue, Deal, MessageTemplate } from '@/types';
+import type { Contact, Tag, ContactTag, ContactNote, CustomField, ContactCustomValue, Deal, MessageTemplate, Appointment } from '@/types';
+import { AppointmentBookingModal } from '@/components/appointments/appointment-booking-modal';
 import {
   TemplatePicker,
   type TemplateSendValues,
@@ -39,6 +40,8 @@ import {
   X,
   DollarSign,
   LayoutTemplate,
+  Calendar,
+  Clock,
 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { contactHandle } from '@/lib/whatsapp/wa-identity';
@@ -98,6 +101,11 @@ export function ContactDetailView({
   // Deals tab
   const [deals, setDeals] = useState<Deal[]>([]);
   const [loadingDeals, setLoadingDeals] = useState(false);
+
+  // Appointments tab
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [loadingAppointments, setLoadingAppointments] = useState(false);
+  const [bookingModalOpen, setBookingModalOpen] = useState(false);
 
   const fetchContact = useCallback(async () => {
     if (!contactId) return;
@@ -182,6 +190,18 @@ export function ContactDetailView({
     setLoadingDeals(false);
   }, [contactId, supabase]);
 
+  const fetchAppointments = useCallback(async () => {
+    if (!contactId) return;
+    setLoadingAppointments(true);
+    const { data } = await supabase
+      .from('appointments')
+      .select('*, service:appointment_services(*), staff:appointment_staff(*)')
+      .eq('contact_id', contactId)
+      .order('start_at', { ascending: false });
+    setAppointments((data ?? []) as unknown as Appointment[]);
+    setLoadingAppointments(false);
+  }, [contactId, supabase]);
+
   useEffect(() => {
     if (open && contactId) {
       fetchContact();
@@ -189,8 +209,9 @@ export function ContactDetailView({
       fetchNotes();
       fetchCustomFields();
       fetchDeals();
+      fetchAppointments();
     }
-  }, [open, contactId, fetchContact, fetchTags, fetchNotes, fetchCustomFields, fetchDeals]);
+  }, [open, contactId, fetchContact, fetchTags, fetchNotes, fetchCustomFields, fetchDeals, fetchAppointments]);
 
   async function copyPhone() {
     if (!contact) return;
@@ -494,6 +515,12 @@ export function ContactDetailView({
                 >
                   {t('tabs.deals')}
                 </TabsTrigger>
+                <TabsTrigger
+                  value="appointments"
+                  className="data-active:bg-muted data-active:text-primary text-muted-foreground"
+                >
+                  Appointments ({appointments.length})
+                </TabsTrigger>
               </TabsList>
 
               {/* Details Tab */}
@@ -756,6 +783,96 @@ export function ContactDetailView({
                   </div>
                 )}
               </TabsContent>
+
+              {/* Appointments Tab */}
+              <TabsContent value="appointments" className="flex-1 overflow-y-auto px-4 py-3">
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    Appointments History
+                  </h4>
+                  <Button
+                    size="sm"
+                    className="h-7 text-xs gap-1"
+                    onClick={() => setBookingModalOpen(true)}
+                  >
+                    <Plus className="size-3" />
+                    Book appointment
+                  </Button>
+                </div>
+
+                {loadingAppointments ? (
+                  <div className="flex items-center justify-center py-8 text-muted-foreground text-xs">
+                    <Loader2 className="size-4 animate-spin mr-1.5" />
+                    Loading appointments...
+                  </div>
+                ) : appointments.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-border p-6 text-center">
+                    <Calendar className="size-8 text-muted-foreground/40 mx-auto mb-2" />
+                    <p className="text-sm font-medium text-foreground">No appointments yet</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Schedule a procedure or consultation for this contact.
+                    </p>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="mt-3 text-xs gap-1"
+                      onClick={() => setBookingModalOpen(true)}
+                    >
+                      <Plus className="size-3" />
+                      Book first appointment
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {appointments.map((app) => (
+                      <div
+                        key={app.id}
+                        className="rounded-lg border border-border bg-card p-3 space-y-1.5 hover:border-primary/40 transition-colors"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium text-sm text-foreground">
+                            {app.service?.name || "Appointment"}
+                          </span>
+                          <Badge
+                            variant="outline"
+                            className="text-[10px] px-1.5 py-0 capitalize"
+                          >
+                            {app.status}
+                          </Badge>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <span className="flex items-center gap-1">
+                            <Clock className="size-3" />
+                            {new Date(app.start_at).toLocaleDateString(undefined, {
+                              day: "numeric",
+                              month: "short",
+                              year: "numeric",
+                            })}{" "}
+                            at{" "}
+                            {new Date(app.start_at).toLocaleTimeString(undefined, {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </span>
+                          {app.staff?.name && (
+                            <>
+                              <span>•</span>
+                              <span className="font-medium text-foreground">
+                                {app.staff.name}
+                              </span>
+                            </>
+                          )}
+                        </div>
+                        {app.notes && (
+                          <p className="text-xs text-muted-foreground bg-muted/40 p-1.5 rounded mt-1">
+                            {app.notes}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </TabsContent>
             </Tabs>
           </div>
         )}
@@ -766,6 +883,16 @@ export function ContactDetailView({
       onOpenChange={setTemplatePickerOpen}
       onSelect={handleSendTemplate}
     />
+    {contact && (
+      <AppointmentBookingModal
+        open={bookingModalOpen}
+        onOpenChange={setBookingModalOpen}
+        onBooked={fetchAppointments}
+        preselectedContactId={contact.id}
+        preselectedContactName={contact.name}
+        preselectedContactPhone={contact.phone}
+      />
+    )}
     </>
   );
 }

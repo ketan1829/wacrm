@@ -196,6 +196,17 @@ export function NodeConfigForm({
         />
       );
 
+    case "book_appointment":
+      return (
+        <BookAppointmentForm
+          cfg={cfg as BookAppointmentCfg}
+          allNodes={allNodes}
+          currentKey={node.node_key}
+          onUpdateConfig={onUpdateConfig}
+          t={t}
+        />
+      );
+
     case "handoff":
       return (
         <TextRow
@@ -860,6 +871,149 @@ function SetTagForm({
         currentKey={currentKey}
         onChange={(v) => onUpdateConfig({ next_node_key: v })}
         label={t("thenAdvanceTo")}
+      />
+    </>
+  );
+}
+
+// ============================================================
+// book_appointment
+// ============================================================
+
+interface BookAppointmentCfg {
+  service_id?: string;
+  staff_id?: string;
+  date_selection_days?: number;
+  confirmation_message?: string;
+  next_node_key?: string;
+}
+
+function BookAppointmentForm({
+  cfg,
+  allNodes,
+  currentKey,
+  onUpdateConfig,
+  t,
+}: {
+  cfg: BookAppointmentCfg;
+  allNodes: BuilderNode[];
+  currentKey: string;
+  onUpdateConfig: (patch: Record<string, unknown>) => void;
+  t: (key: string, values?: Record<string, string | number>) => string;
+}) {
+  const [services, setServices] = useState<Array<{ id: string; name: string }>>([]);
+  const [staff, setStaff] = useState<Array<{ id: string; name: string }>>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [resServices, resStaff] = await Promise.all([
+          fetch("/api/appointments/services").catch(() => null),
+          fetch("/api/appointments/staff").catch(() => null),
+        ]);
+        if (resServices && resServices.ok) {
+          const json = await resServices.json();
+          if (!cancelled && Array.isArray(json.services)) {
+            setServices(json.services);
+          }
+        }
+        if (resStaff && resStaff.ok) {
+          const json = await resStaff.json();
+          if (!cancelled && Array.isArray(json.staff)) {
+            setStaff(json.staff);
+          }
+        }
+      } catch (err) {
+        console.warn("Failed to load services or staff for flow node config", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return (
+    <>
+      <div className="space-y-1">
+        <label className="text-xs font-medium text-foreground">
+          {t("bookServiceLabel")}
+        </label>
+        <Select
+          value={cfg.service_id || "any"}
+          onValueChange={(val) => {
+            if (val) onUpdateConfig({ service_id: val === "any" ? "" : val });
+          }}
+        >
+          <SelectTrigger className="bg-muted text-xs">
+            <SelectValue placeholder={t("customerPicksService")} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="any">{t("customerPicksService")}</SelectItem>
+            {services.map((s) => (
+              <SelectItem key={s.id} value={s.id}>
+                {s.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="space-y-1">
+        <label className="text-xs font-medium text-foreground">
+          {t("bookStaffLabel")}
+        </label>
+        <Select
+          value={cfg.staff_id || "any"}
+          onValueChange={(val) => {
+            if (val) onUpdateConfig({ staff_id: val === "any" ? "" : val });
+          }}
+        >
+          <SelectTrigger className="bg-muted text-xs">
+            <SelectValue placeholder={t("anyProvider")} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="any">{t("anyProvider")}</SelectItem>
+            {staff.map((st) => (
+              <SelectItem key={st.id} value={st.id}>
+                {st.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="space-y-1">
+        <label className="text-xs font-medium text-foreground">
+          {t("bookDaysLabel")}
+        </label>
+        <Input
+          type="number"
+          min={1}
+          max={60}
+          value={cfg.date_selection_days ?? 14}
+          onChange={(e) => {
+            const val = parseInt(e.target.value, 10);
+            onUpdateConfig({ date_selection_days: isNaN(val) ? 14 : val });
+          }}
+          className="bg-muted text-xs"
+        />
+      </div>
+
+      <TextRow
+        label={t("bookConfirmationLabel")}
+        value={cfg.confirmation_message ?? ""}
+        onChange={(v) => onUpdateConfig({ confirmation_message: v })}
+        placeholder="Your appointment for {{appointment.service}} on {{appointment.date}} at {{appointment.time}} is confirmed!"
+        rows={3}
+      />
+
+      <NextNodeRow
+        value={cfg.next_node_key ?? ""}
+        allNodes={allNodes}
+        currentKey={currentKey}
+        onChange={(v) => onUpdateConfig({ next_node_key: v })}
+        label={t("advancesTo")}
       />
     </>
   );

@@ -22,6 +22,7 @@
     "notifications": "Notifications",
     "contacts": "Contacts",
     "pipelines": "Pipelines",
+    "appointments": "Appointments",
     "broadcasts": "Broadcasts",
     "automations": "Automations",
     "flows": "Flows",
@@ -47,6 +48,7 @@
     "notifications": "Notifications",
     "contacts": "Contacts",
     "pipelines": "Pipelines",
+    "appointments": "Appointments",
     "broadcasts": "Broadcasts",
     "automations": "Automations",
     "settings": "Settings",
@@ -57,6 +59,47 @@
     "menuProfile": "Profile",
     "menuSettings": "Settings",
     "menuSignOut": "Sign out"
+  },
+  "Appointments": {
+    "title": "Appointments",
+    "description": "Manage bookable services, staff schedules, and calendar appointments.",
+    "tabs": {
+      "calendar": "Calendar",
+      "services": "Services",
+      "staff": "Staff",
+      "availability": "Working Hours & Exceptions"
+    },
+    "actions": {
+      "newBooking": "New booking",
+      "addService": "Add service",
+      "addStaff": "Add staff",
+      "reschedule": "Reschedule",
+      "cancel": "Cancel",
+      "markCompleted": "Mark completed",
+      "markNoShow": "Mark no-show",
+      "openConversation": "Open conversation",
+      "save": "Save changes",
+      "saving": "Saving..."
+    },
+    "stats": {
+      "today": "Today",
+      "confirmed": "Confirmed",
+      "pending": "Pending",
+      "completed": "Completed",
+      "cancelled": "Cancelled",
+      "noShow": "No-show"
+    },
+    "views": {
+      "day": "Day",
+      "week": "Week",
+      "month": "Month",
+      "today": "Today"
+    },
+    "filters": {
+      "allStaff": "All staff",
+      "allServices": "All services",
+      "allStatuses": "All statuses"
+    }
   },
   "ModeToggle": {
     "switchMode": "Switch to {mode} mode"
@@ -1217,7 +1260,13 @@
         "fileUploaded": "File uploaded.",
         "uploadFailed": "Upload failed.",
         "fileTooLarge": "File is {size} MB — limit is 16 MB.",
-        "defaultOptionTitle": "Option"
+        "defaultOptionTitle": "Option",
+        "bookServiceLabel": "Service (optional, lets customer pick if unselected)",
+        "bookStaffLabel": "Provider (optional, any available provider if unselected)",
+        "bookDaysLabel": "Booking window (days)",
+        "bookConfirmationLabel": "Confirmation message (optional, supports appointment variables)",
+        "anyProvider": "Any available provider",
+        "customerPicksService": "Ask customer (dynamic list)"
       },
       "categories": {
         "messaging": "Messaging",
@@ -1256,6 +1305,10 @@
         "set_tag": {
           "label": "Tag contact",
           "blurb": "Adds or removes a contact tag"
+        },
+        "book_appointment": {
+          "label": "Book appointment",
+          "blurb": "Guides customer to book an appointment"
         },
         "handoff": {
           "label": "Handoff to agent",

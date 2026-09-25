@@ -42,7 +42,15 @@ import {
 import { decideFallback, resolveFallbackPolicy } from "./fallback";
 import { addContactTagAndDispatch } from "@/lib/contacts/tag-events";
 import { removeContactTag } from "@/lib/contacts/tag-write";
+import { createAppointment } from "@/lib/appointments/booking";
 import {
+  getAvailableDates,
+  getAvailableSlots,
+  formatTimeInTimezone,
+} from "@/lib/appointments/availability";
+import { type AvailableDate, type TimeSlot } from "@/lib/appointments/types";
+import {
+  type BookAppointmentNodeConfig,
   type CollectInputNodeConfig,
   type ConditionNodeConfig,
   type DispatchInboundInput,
@@ -181,9 +189,38 @@ export function interpolateVars(
   nodes?: FlowNodesContainer,
 ): string {
   if (!template) return "";
-  return template.replace(/\{\{vars\.([a-zA-Z0-9_]+)\}\}/g, (_, key) => {
-    const v = vars[key];
-    return resolveVariableDisplayValue(key, v, nodes);
+  return template.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, fullKey) => {
+    const parts = String(fullKey).split(".");
+    if (parts.length === 1) {
+      const v = vars[parts[0]];
+      return v !== undefined && v !== null ? resolveVariableDisplayValue(parts[0], v, nodes) : "";
+    }
+    const [ns, prop] = parts;
+    if (ns === "vars") {
+      const v = vars[prop];
+      return resolveVariableDisplayValue(prop, v, nodes);
+    }
+    if (ns === "appointment") {
+      const v =
+        vars[`appointment_${prop}`] ??
+        vars[`appointment.${prop}`] ??
+        (typeof vars.appointment === "object" && vars.appointment !== null
+          ? (vars.appointment as Record<string, unknown>)[prop]
+          : undefined);
+      return v !== undefined && v !== null ? String(v) : "";
+    }
+    if (ns === "contact") {
+      const v =
+        vars[`contact_${prop}`] ??
+        vars[`contact.${prop}`] ??
+        (typeof vars.contact === "object" && vars.contact !== null
+          ? (vars.contact as Record<string, unknown>)[prop]
+          : undefined);
+      return v !== undefined && v !== null ? String(v) : "";
+    }
+    const raw = vars[fullKey];
+    if (raw !== undefined && raw !== null) return String(raw);
+    return "";
   });
 }
 
@@ -266,7 +303,8 @@ export function isSuspending(node_type: string): boolean {
   return (
     node_type === "send_buttons" ||
     node_type === "send_list" ||
-    node_type === "collect_input"
+    node_type === "collect_input" ||
+    node_type === "book_appointment"
   );
 }
 
@@ -593,6 +631,452 @@ async function sendListAndSuspend(
     })
     .eq("id", run.id);
   return { outcome: "advanced", node_key: node.node_key };
+}
+
+/**
+ * Drives the multi-step appointment booking conversation over WhatsApp:
+ * 1. Service Selection (if service_id is not already pinned or chosen)
+ * 2. Date Selection (if booking_date is not already chosen)
+ * 3. Time Slot Selection (if booking_slot_start is not already chosen)
+ * 4. Booking Execution & Confirmation
+ */
+async function executeBookAppointmentStep(
+  db: AdminClient,
+  run: FlowRunRow,
+  node: FlowNodeRow,
+  nodes?: FlowNodesContainer,
+): Promise<{ outcome: "advanced" | "completed"; nextKey?: string }> {
+  const cfg = node.config as unknown as BookAppointmentNodeConfig;
+
+  // ------------------------------------------------------------
+  // Step 1: Service Selection
+  // ------------------------------------------------------------
+  const serviceId =
+    cfg.service_id ||
+    (run.vars.booking_service_id as string | undefined) ||
+    (run.vars.service_id as string | undefined);
+
+  if (!serviceId) {
+    const { data: services, error: svcErr } = await db
+      .from("appointment_services")
+      .select("id, name, duration_minutes, price, currency")
+      .eq("account_id", run.account_id)
+      .eq("is_active", true)
+      .order("name", { ascending: true })
+      .limit(10);
+
+    if (svcErr || !services || services.length === 0) {
+      await logEvent(db, run.id, "error", node.node_key, {
+        reason: "no_active_services",
+      });
+      await engineSendText({
+        accountId: run.account_id,
+        userId: run.user_id,
+        conversationId: run.conversation_id!,
+        contactId: run.contact_id!,
+        text: "No appointment services are currently available. Please contact us directly.",
+      });
+      await endRun(db, run.id, "failed", "no_active_services");
+      return { outcome: "completed" };
+    }
+
+    try {
+      const { whatsapp_message_id } = await engineSendInteractiveList({
+        accountId: run.account_id,
+        userId: run.user_id,
+        conversationId: run.conversation_id!,
+        contactId: run.contact_id!,
+        bodyText: "Please select a service for your appointment:",
+        buttonLabel: "Select Service",
+        sections: [
+          {
+            title: "Available Services",
+            rows: services.map((s) => ({
+              id: `book_svc_${s.id}`,
+              title: s.name.slice(0, 24),
+              description: s.price
+                ? `${s.duration_minutes} min • ${s.currency || "INR"} ${s.price}`.slice(0, 72)
+                : `${s.duration_minutes} mins`,
+            })),
+          },
+        ],
+      });
+
+      await logEvent(db, run.id, "message_sent", node.node_key, {
+        node_type: "book_appointment",
+        step: "service_selection",
+        whatsapp_message_id,
+      });
+
+      const { data: msg } = await db
+        .from("messages")
+        .select("id")
+        .eq("message_id", whatsapp_message_id)
+        .maybeSingle();
+
+      await db
+        .from("flow_runs")
+        .update({
+          last_prompt_message_id: (msg as { id: string } | null)?.id ?? null,
+        })
+        .eq("id", run.id);
+    } catch (err) {
+      await logEvent(db, run.id, "error", node.node_key, {
+        reason: "book_appointment_send_services_failed",
+        detail: err instanceof Error ? err.message : String(err),
+      });
+      await endRun(db, run.id, "failed", "book_appointment_send_services_failed");
+      return { outcome: "completed" };
+    }
+
+    await advanceCurrentNodeKey(db, run.id, run.current_node_key, node.node_key);
+    return { outcome: "advanced" };
+  }
+
+  // ------------------------------------------------------------
+  // Step 2: Date Selection
+  // ------------------------------------------------------------
+  const date = run.vars.booking_date as string | undefined;
+
+  if (!date) {
+    const daysWindow =
+      typeof cfg.date_selection_days === "number" && cfg.date_selection_days > 0
+        ? cfg.date_selection_days
+        : 14;
+
+    const staffId = cfg.staff_id || (run.vars.booking_staff_id as string | undefined);
+
+    let availableDates: AvailableDate[] = [];
+    try {
+      availableDates = await getAvailableDates({
+        accountId: run.account_id,
+        serviceId,
+        staffId: staffId || undefined,
+        daysCount: daysWindow,
+        client: db,
+      });
+    } catch (err) {
+      await logEvent(db, run.id, "error", node.node_key, {
+        reason: "get_available_dates_failed",
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    const bookableDates = availableDates.filter((d) => d.available);
+
+    if (bookableDates.length === 0) {
+      await engineSendText({
+        accountId: run.account_id,
+        userId: run.user_id,
+        conversationId: run.conversation_id!,
+        contactId: run.contact_id!,
+        text: "Sorry, there are no available dates in the upcoming schedule. Please contact us directly.",
+      });
+      await logEvent(db, run.id, "error", node.node_key, {
+        reason: "no_available_dates",
+      });
+      await endRun(db, run.id, "completed", "no_available_dates");
+      return { outcome: "completed" };
+    }
+
+    try {
+      const { whatsapp_message_id } = await engineSendInteractiveList({
+        accountId: run.account_id,
+        userId: run.user_id,
+        conversationId: run.conversation_id!,
+        contactId: run.contact_id!,
+        bodyText: "Please choose a date for your appointment:",
+        buttonLabel: "Select Date",
+        sections: [
+          {
+            title: "Available Dates",
+            rows: bookableDates.slice(0, 10).map((d) => ({
+              id: `book_date_${d.date}`,
+              title: `${d.day_name}, ${d.date}`.slice(0, 24),
+              description: `${d.slot_count} slot${d.slot_count === 1 ? "" : "s"} available`,
+            })),
+          },
+        ],
+      });
+
+      await logEvent(db, run.id, "message_sent", node.node_key, {
+        node_type: "book_appointment",
+        step: "date_selection",
+        whatsapp_message_id,
+      });
+
+      const { data: msg } = await db
+        .from("messages")
+        .select("id")
+        .eq("message_id", whatsapp_message_id)
+        .maybeSingle();
+
+      await db
+        .from("flow_runs")
+        .update({
+          last_prompt_message_id: (msg as { id: string } | null)?.id ?? null,
+        })
+        .eq("id", run.id);
+    } catch (err) {
+      await logEvent(db, run.id, "error", node.node_key, {
+        reason: "book_appointment_send_dates_failed",
+        detail: err instanceof Error ? err.message : String(err),
+      });
+      await endRun(db, run.id, "failed", "book_appointment_send_dates_failed");
+      return { outcome: "completed" };
+    }
+
+    await advanceCurrentNodeKey(db, run.id, run.current_node_key, node.node_key);
+    return { outcome: "advanced" };
+  }
+
+  // ------------------------------------------------------------
+  // Step 3: Slot Selection
+  // ------------------------------------------------------------
+  const slotStartIso = run.vars.booking_slot_start as string | undefined;
+
+  if (!slotStartIso) {
+    const staffId = cfg.staff_id || (run.vars.booking_staff_id as string | undefined);
+
+    let freeSlots: TimeSlot[] = [];
+    try {
+      const { slots } = await getAvailableSlots({
+        accountId: run.account_id,
+        serviceId,
+        staffId: staffId || undefined,
+        date,
+        client: db,
+      });
+      freeSlots = slots.filter((s) => s.available);
+    } catch (err) {
+      await logEvent(db, run.id, "error", node.node_key, {
+        reason: "get_available_slots_failed",
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    if (freeSlots.length === 0) {
+      await engineSendText({
+        accountId: run.account_id,
+        userId: run.user_id,
+        conversationId: run.conversation_id!,
+        contactId: run.contact_id!,
+        text: "No times are available on that date. Please select another date:",
+      });
+      const newVars = { ...run.vars };
+      delete newVars.booking_date;
+      await db.from("flow_runs").update({ vars: newVars }).eq("id", run.id);
+      run.vars = newVars;
+      return executeBookAppointmentStep(db, run, node, nodes);
+    }
+
+    try {
+      const { whatsapp_message_id } = await engineSendInteractiveList({
+        accountId: run.account_id,
+        userId: run.user_id,
+        conversationId: run.conversation_id!,
+        contactId: run.contact_id!,
+        bodyText: `Available times for ${date}:`,
+        buttonLabel: "Select Time",
+        sections: [
+          {
+            title: "Available Slots",
+            rows: freeSlots.slice(0, 10).map((s) => ({
+              id: `book_slot_${s.start_iso}|${s.staff_id || ""}`,
+              title: `${s.start} - ${s.end}`.slice(0, 24),
+              description: s.staff_name ? `with ${s.staff_name}`.slice(0, 72) : undefined,
+            })),
+          },
+        ],
+      });
+
+      await logEvent(db, run.id, "message_sent", node.node_key, {
+        node_type: "book_appointment",
+        step: "slot_selection",
+        whatsapp_message_id,
+      });
+
+      const { data: msg } = await db
+        .from("messages")
+        .select("id")
+        .eq("message_id", whatsapp_message_id)
+        .maybeSingle();
+
+      await db
+        .from("flow_runs")
+        .update({
+          last_prompt_message_id: (msg as { id: string } | null)?.id ?? null,
+        })
+        .eq("id", run.id);
+    } catch (err) {
+      await logEvent(db, run.id, "error", node.node_key, {
+        reason: "book_appointment_send_slots_failed",
+        detail: err instanceof Error ? err.message : String(err),
+      });
+      await endRun(db, run.id, "failed", "book_appointment_send_slots_failed");
+      return { outcome: "completed" };
+    }
+
+    await advanceCurrentNodeKey(db, run.id, run.current_node_key, node.node_key);
+    return { outcome: "advanced" };
+  }
+
+  // ------------------------------------------------------------
+  // Step 4: Finalize Booking & Create Appointment
+  // ------------------------------------------------------------
+  let slotStaffId =
+    (run.vars.booking_slot_staff_id as string | undefined) ||
+    cfg.staff_id ||
+    (run.vars.booking_staff_id as string | undefined);
+
+  let customerName = "Customer";
+  let customerPhone = "";
+  if (run.contact_id) {
+    const { data: contact } = await db
+      .from("contacts")
+      .select("name, phone")
+      .eq("id", run.contact_id)
+      .maybeSingle();
+    if (contact) {
+      customerName = (contact as { name?: string }).name || customerName;
+      customerPhone = (contact as { phone?: string }).phone || customerPhone;
+    }
+  }
+
+  if (!slotStaffId) {
+    const { data: staffList } = await db
+      .from("appointment_staff")
+      .select("id")
+      .eq("account_id", run.account_id)
+      .eq("is_active", true)
+      .limit(1);
+    if (staffList && staffList.length > 0) {
+      slotStaffId = staffList[0].id;
+    }
+  }
+
+  // Calculate end time based on service duration
+  const { data: svcRow } = await db
+    .from("appointment_services")
+    .select("name, duration_minutes")
+    .eq("id", serviceId)
+    .eq("account_id", run.account_id)
+    .maybeSingle();
+
+  const durationMin = (svcRow as { duration_minutes?: number } | null)?.duration_minutes || 30;
+  const slotStartDate = new Date(slotStartIso);
+  const slotEndDate = new Date(slotStartDate.getTime() + durationMin * 60 * 1000);
+
+  const bookingResult = await createAppointment({
+    accountId: run.account_id,
+    serviceId,
+    staffId: slotStaffId || "",
+    startAt: slotStartDate.toISOString(),
+    endAt: slotEndDate.toISOString(),
+    customerName,
+    customerPhone,
+    contactId: run.contact_id,
+    conversationId: run.conversation_id,
+    source: "whatsapp_flow",
+    status: "confirmed",
+  });
+
+  if (!bookingResult.ok || !bookingResult.appointment) {
+    await logEvent(db, run.id, "error", node.node_key, {
+      reason: "create_appointment_failed",
+      detail: bookingResult.error,
+    });
+
+    if (bookingResult.code === "SLOT_ALREADY_BOOKED") {
+      await engineSendText({
+        accountId: run.account_id,
+        userId: run.user_id,
+        conversationId: run.conversation_id!,
+        contactId: run.contact_id!,
+        text: "That time slot was just booked by another customer. Please choose another time:",
+      });
+      const newVars = { ...run.vars };
+      delete newVars.booking_slot_start;
+      delete newVars.booking_slot_staff_id;
+      delete newVars.booking_slot_label;
+      await db.from("flow_runs").update({ vars: newVars }).eq("id", run.id);
+      run.vars = newVars;
+      return executeBookAppointmentStep(db, run, node, nodes);
+    }
+
+    await engineSendText({
+      accountId: run.account_id,
+      userId: run.user_id,
+      conversationId: run.conversation_id!,
+      contactId: run.contact_id!,
+      text: "Sorry, we encountered an error while booking your appointment. Please contact us directly.",
+    });
+    await endRun(db, run.id, "failed", "create_appointment_failed");
+    return { outcome: "completed" };
+  }
+
+  const appt = bookingResult.appointment;
+  const serviceName =
+    (run.vars.booking_service_name as string) || (svcRow as { name?: string } | null)?.name || "Service";
+  const staffName = appt.staff?.name || "Staff";
+  const apptDate = date;
+  const apptTime =
+    (run.vars.booking_slot_label as string) ||
+    (appt.start_at ? formatTimeInTimezone(new Date(appt.start_at), appt.timezone) : "");
+
+  const updatedVars: Record<string, unknown> = {
+    ...run.vars,
+    appointment_id: appt.id,
+    appointment_service: serviceName,
+    appointment_staff: staffName,
+    appointment_date: apptDate,
+    appointment_time: apptTime,
+    contact_name: customerName,
+  };
+
+  delete updatedVars.booking_service_id;
+  delete updatedVars.booking_service_name;
+  delete updatedVars.booking_staff_id;
+  delete updatedVars.booking_date;
+  delete updatedVars.booking_slot_start;
+  delete updatedVars.booking_slot_staff_id;
+  delete updatedVars.booking_slot_label;
+
+  run.vars = updatedVars;
+  await db.from("flow_runs").update({ vars: updatedVars }).eq("id", run.id);
+
+  // Send confirmation message
+  try {
+    const confirmText =
+      cfg.confirmation_message && cfg.confirmation_message.trim()
+        ? interpolateVars(cfg.confirmation_message, run.vars, nodes)
+        : `Your appointment for ${serviceName} on ${apptDate} at ${apptTime} is confirmed!`;
+
+    const { whatsapp_message_id } = await engineSendText({
+      accountId: run.account_id,
+      userId: run.user_id,
+      conversationId: run.conversation_id!,
+      contactId: run.contact_id!,
+      text: confirmText,
+    });
+
+    await logEvent(db, run.id, "message_sent", node.node_key, {
+      node_type: "book_appointment",
+      step: "confirmation",
+      whatsapp_message_id,
+    });
+  } catch (sendErr) {
+    console.warn("[flows] failed to send appointment confirmation text:", sendErr);
+  }
+
+  await logEvent(db, run.id, "node_entered", node.node_key, {
+    step: "appointment_booked",
+    appointment_id: appt.id,
+    service_id: serviceId,
+    start_at: slotStartIso,
+  });
+
+  return { outcome: "advanced", nextKey: cfg.next_node_key };
 }
 
 async function executeHandoff(
@@ -943,6 +1427,17 @@ async function advanceFromNodeKey(
       }
       return { outcome: "advanced" };
     }
+    if (node.node_type === "book_appointment") {
+      const result = await executeBookAppointmentStep(db, run, node, nodes);
+      if (result.outcome === "completed") {
+        return { outcome: "completed" };
+      }
+      if (result.nextKey) {
+        currentKey = result.nextKey;
+        continue;
+      }
+      return { outcome: "advanced" };
+    }
     if (node.node_type === "handoff") {
       await executeHandoff(db, run, node);
       return { outcome: "handed_off" };
@@ -1220,6 +1715,90 @@ async function handleReplyForActiveRun(
         matched = cfg.next_node_key;
       }
     }
+  } else if (
+    message.kind === "interactive_reply" &&
+    currentNode.node_type === "book_appointment"
+  ) {
+    if (message.reply_id.startsWith("book_svc_")) {
+      const svcId = message.reply_id.replace(/^book_svc_/, "");
+      const newVars = {
+        ...run.vars,
+        booking_service_id: svcId,
+        ...(resolvedReplyTitle ? { booking_service_name: resolvedReplyTitle } : {}),
+      };
+      const { error: varErr } = await db
+        .from("flow_runs")
+        .update({ vars: newVars, reprompt_count: 0 })
+        .eq("id", run.id);
+      if (!varErr) {
+        run.vars = newVars;
+        run.reprompt_count = 0;
+        matched = currentNode.node_key;
+      }
+    } else if (message.reply_id.startsWith("book_date_")) {
+      const dateStr = message.reply_id.replace(/^book_date_/, "");
+      const newVars = {
+        ...run.vars,
+        booking_date: dateStr,
+      };
+      const { error: varErr } = await db
+        .from("flow_runs")
+        .update({ vars: newVars, reprompt_count: 0 })
+        .eq("id", run.id);
+      if (!varErr) {
+        run.vars = newVars;
+        run.reprompt_count = 0;
+        matched = currentNode.node_key;
+      }
+    } else if (message.reply_id.startsWith("book_slot_")) {
+      const raw = message.reply_id.replace(/^book_slot_/, "");
+      const [slotStart, slotStaff] = raw.split("|");
+      const newVars = {
+        ...run.vars,
+        booking_slot_start: slotStart,
+        ...(slotStaff ? { booking_slot_staff_id: slotStaff } : {}),
+        ...(resolvedReplyTitle ? { booking_slot_label: resolvedReplyTitle } : {}),
+      };
+      const { error: varErr } = await db
+        .from("flow_runs")
+        .update({ vars: newVars, reprompt_count: 0 })
+        .eq("id", run.id);
+      if (!varErr) {
+        run.vars = newVars;
+        run.reprompt_count = 0;
+        matched = currentNode.node_key;
+      }
+    }
+
+    if (matched && resolvedReplyTitle && message.meta_message_id) {
+      const { data: existingMsg } = await db
+        .from("messages")
+        .select("content_text")
+        .eq("message_id", message.meta_message_id)
+        .maybeSingle();
+
+      const currentContent = (existingMsg as { content_text?: string } | null)?.content_text;
+      if (
+        !currentContent ||
+        currentContent === message.reply_id ||
+        currentContent === "[Interactive reply]"
+      ) {
+        await db
+          .from("messages")
+          .update({ content_text: resolvedReplyTitle })
+          .eq("message_id", message.meta_message_id);
+
+        if (run.conversation_id) {
+          await db
+            .from("conversations")
+            .update({
+              last_message_text: resolvedReplyTitle,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", run.conversation_id);
+        }
+      }
+    }
   }
 
   if (matched) {
@@ -1286,6 +1865,8 @@ async function handleReplyForActiveRun(
           contactId: run.contact_id!,
           text: interpolateVars(cfg.prompt_text, run.vars, nodes),
         });
+      } else if (currentNode.node_type === "book_appointment") {
+        await executeBookAppointmentStep(db, run, currentNode, nodes);
       }
     } catch (err) {
       await logEvent(db, run.id, "error", currentNode.node_key, {

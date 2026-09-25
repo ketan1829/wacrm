@@ -4,7 +4,8 @@ import { useState, useEffect, useCallback } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { cn } from "@/lib/utils";
-import type { Contact, Deal, ContactNote, Tag } from "@/types";
+import Link from "next/link";
+import type { Contact, Deal, ContactNote, Tag, Appointment } from "@/types";
 import {
   Phone,
   Mail,
@@ -15,8 +16,10 @@ import {
   DollarSign,
   StickyNote,
   Plus,
+  Calendar,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { format } from "date-fns";
 import { useTranslations } from "next-intl";
@@ -35,6 +38,7 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
   const [deals, setDeals] = useState<Deal[]>([]);
   const [notes, setNotes] = useState<ContactNote[]>([]);
   const [tags, setTags] = useState<(Tag & { contact_tag_id: string })[]>([]);
+  const [upcomingAppointment, setUpcomingAppointment] = useState<Appointment | null>(null);
   const [newNote, setNewNote] = useState("");
   const [addingNote, setAddingNote] = useState(false);
 
@@ -43,8 +47,8 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
 
     const supabase = createClient();
 
-    // Fetch deals, notes, and tags in parallel
-    const [dealsRes, notesRes, tagsRes] = await Promise.all([
+    // Fetch deals, notes, tags, and upcoming appointment in parallel
+    const [dealsRes, notesRes, tagsRes, appRes] = await Promise.all([
       supabase
         .from("deals")
         .select("*, stage:pipeline_stages(*)")
@@ -59,10 +63,24 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
         .from("contact_tags")
         .select("id, tag_id, tags(*)")
         .eq("contact_id", contact.id),
+      supabase
+        .from("appointments")
+        .select("*, service:appointment_services(*), staff:appointment_staff(*)")
+        .eq("contact_id", contact.id)
+        .gte("end_at", new Date().toISOString())
+        .in("status", ["pending", "confirmed"])
+        .order("start_at", { ascending: true })
+        .limit(1)
+        .maybeSingle(),
     ]);
 
     if (dealsRes.data) setDeals(dealsRes.data);
     if (notesRes.data) setNotes(notesRes.data);
+    if (appRes.data) {
+      setUpcomingAppointment(appRes.data as unknown as Appointment);
+    } else {
+      setUpcomingAppointment(null);
+    }
     if (tagsRes.data) {
       const mapped = tagsRes.data
         .filter((ct: Record<string, unknown>) => ct.tags)
@@ -180,6 +198,59 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
               <div className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground">
                 <Mail className="h-4 w-4 text-muted-foreground" />
                 <span className="truncate">{contact.email}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Upcoming Appointment */}
+          <div className="mt-3">
+            {upcomingAppointment ? (
+              <div className="rounded-lg border border-primary/30 bg-primary/5 p-3 space-y-1.5 shadow-2xs">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-primary">
+                    <Calendar className="h-3.5 w-3.5" />
+                    Appointment
+                  </div>
+                  <Badge
+                    variant="outline"
+                    className="text-[10px] px-1.5 py-0 capitalize border-primary/30 text-primary"
+                  >
+                    {upcomingAppointment.status}
+                  </Badge>
+                </div>
+                <div className="font-medium text-xs text-foreground">
+                  {upcomingAppointment.service?.name || "Appointment"}
+                </div>
+                <div className="text-[11px] text-muted-foreground flex items-center gap-1.5">
+                  <span>{format(new Date(upcomingAppointment.start_at), "d MMM · h:mm a")}</span>
+                  {upcomingAppointment.staff?.name && (
+                    <>
+                      <span>•</span>
+                      <span className="font-medium text-foreground">
+                        {upcomingAppointment.staff.name}
+                      </span>
+                    </>
+                  )}
+                </div>
+                <Link
+                  href="/appointments"
+                  className="text-[11px] text-primary hover:underline block pt-1 font-medium"
+                >
+                  View in Calendar →
+                </Link>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between rounded-lg border border-dashed p-2 px-3 text-xs text-muted-foreground">
+                <span className="flex items-center gap-1.5 text-xs">
+                  <Calendar className="h-3.5 w-3.5 opacity-60" />
+                  No upcoming booking
+                </span>
+                <Link
+                  href="/appointments"
+                  className="text-xs font-medium text-primary hover:underline"
+                >
+                  + Book
+                </Link>
               </div>
             )}
           </div>

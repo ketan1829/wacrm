@@ -569,6 +569,59 @@ describe("validateFlowForActivation — send_media", () => {
   });
 });
 
+describe("validateFlowForActivation — book_appointment", () => {
+  it("passes on a well-configured book_appointment node", () => {
+    const nodes = [
+      { node_key: "s", node_type: "start", config: { next_node_key: "b" } },
+      {
+        node_key: "b",
+        node_type: "book_appointment",
+        config: {
+          service_id: "svc-1",
+          date_selection_days: 14,
+          next_node_key: "e",
+        },
+      },
+      { node_key: "e", node_type: "end", config: {} },
+    ];
+    const issues = validateFlowForActivation(
+      { name: "Booking Flow", trigger_type: "manual", trigger_config: {}, entry_node_id: "s" },
+      nodes,
+    );
+    expect(issues.filter((i) => i.severity === "error")).toHaveLength(0);
+  });
+
+  it("flags missing next_node_key", () => {
+    const nodes = [
+      { node_key: "s", node_type: "start", config: { next_node_key: "b" } },
+      {
+        node_key: "b",
+        node_type: "book_appointment",
+        config: {},
+      },
+    ];
+    const issues = validateFlowForActivation(
+      { name: "Booking Flow", trigger_type: "manual", trigger_config: {}, entry_node_id: "s" },
+      nodes,
+    );
+    expect(issues.some((i) => i.node_key === "b" && i.field === "next_node_key")).toBe(true);
+  });
+
+  it("contributes to reachability graph", () => {
+    const nodes = [
+      { node_key: "s", node_type: "start", config: { next_node_key: "b" } },
+      {
+        node_key: "b",
+        node_type: "book_appointment",
+        config: { next_node_key: "e" },
+      },
+      { node_key: "e", node_type: "end", config: {} },
+    ];
+    const set = reachableFromEntry("s", nodes);
+    expect(set).toEqual(new Set(["s", "b", "e"]));
+  });
+});
+
 describe("reachableFromEntry", () => {
   it("walks the graph from the entry", () => {
     const set = reachableFromEntry("start", validNodes);

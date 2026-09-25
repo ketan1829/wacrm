@@ -22,6 +22,7 @@
     "notifications": "알림",
     "contacts": "연락처",
     "pipelines": "파이프라인",
+    "appointments": "예약",
     "broadcasts": "브로드캐스트",
     "automations": "자동화",
     "flows": "플로우",
@@ -47,6 +48,7 @@
     "notifications": "알림",
     "contacts": "연락처",
     "pipelines": "파이프라인",
+    "appointments": "예약",
     "broadcasts": "브로드캐스트",
     "automations": "자동화",
     "settings": "설정",
@@ -57,6 +59,47 @@
     "menuProfile": "프로필",
     "menuSettings": "설정",
     "menuSignOut": "로그아웃"
+  },
+  "Appointments": {
+    "title": "예약",
+    "description": "예약 가능한 서비스, 직원 일정 및 캘린더 예약을 관리합니다.",
+    "tabs": {
+      "calendar": "캘린더",
+      "services": "서비스",
+      "staff": "직원",
+      "availability": "영업 시간 및 예외"
+    },
+    "actions": {
+      "newBooking": "새 예약",
+      "addService": "서비스 추가",
+      "addStaff": "직원 추가",
+      "reschedule": "일정 변경",
+      "cancel": "취소",
+      "markCompleted": "완료로 표시",
+      "markNoShow": "노쇼로 표시",
+      "openConversation": "대화 열기",
+      "save": "변경 사항 저장",
+      "saving": "저장 중..."
+    },
+    "stats": {
+      "today": "오늘",
+      "confirmed": "확정됨",
+      "pending": "대기 중",
+      "completed": "완료됨",
+      "cancelled": "취소됨",
+      "noShow": "노쇼"
+    },
+    "views": {
+      "day": "일",
+      "week": "주",
+      "month": "월",
+      "today": "오늘"
+    },
+    "filters": {
+      "allStaff": "모든 직원",
+      "allServices": "모든 서비스",
+      "allStatuses": "모든 상태"
+    }
   },
   "ModeToggle": {
     "switchMode": "{mode} 모드로 전환"
@@ -1217,7 +1260,13 @@
         "fileUploaded": "파일이 업로드되었습니다.",
         "uploadFailed": "업로드에 실패했습니다.",
         "fileTooLarge": "파일이 {size}MB입니다 — 제한은 16MB입니다.",
-        "defaultOptionTitle": "옵션"
+        "defaultOptionTitle": "옵션",
+        "bookServiceLabel": "서비스 (선택사항, 미선택 시 고객이 선택)",
+        "bookStaffLabel": "담당자 (선택사항, 미선택 시 가능한 모든 담당자)",
+        "bookDaysLabel": "예약 가능 기간 (일)",
+        "bookConfirmationLabel": "확인 메시지 (선택사항, 예약 변수 지원)",
+        "anyProvider": "가능한 모든 담당자",
+        "customerPicksService": "고객에게 질문 (동적 목록)"
       },
       "categories": {
         "messaging": "메시징",
@@ -1256,6 +1305,10 @@
         "set_tag": {
           "label": "연락처 태그 지정",
           "blurb": "연락처 태그를 추가하거나 제거합니다"
+        },
+        "book_appointment": {
+          "label": "예약하기",
+          "blurb": "고객이 예약을 진행하도록 안내합니다"
         },
         "handoff": {
           "label": "상담원에게 인계",

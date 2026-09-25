@@ -174,6 +174,19 @@ export interface SetTagNodeConfig {
   next_node_key: string;
 }
 
+export interface BookAppointmentNodeConfig {
+  /** Optional service ID; if unset, customer picks from list. */
+  service_id?: string;
+  /** Optional staff ID; if unset, any available provider is used. */
+  staff_id?: string;
+  /** Number of days in the future to offer dates for (default 14). */
+  date_selection_days?: number;
+  /** Custom confirmation message text sent after booking. */
+  confirmation_message?: string;
+  /** Node to advance to after appointment is created. */
+  next_node_key: string;
+}
+
 // Terminal nodes carry no config — they just stop the run.
 export type EndNodeConfig = Record<string, never>;
 
@@ -194,6 +207,7 @@ export type FlowNodeConfig =
   | { node_type: "collect_input"; config: CollectInputNodeConfig }
   | { node_type: "condition"; config: ConditionNodeConfig }
   | { node_type: "set_tag"; config: SetTagNodeConfig }
+  | { node_type: "book_appointment"; config: BookAppointmentNodeConfig }
   | { node_type: "handoff"; config: HandoffNodeConfig }
   | { node_type: "end"; config: EndNodeConfig };
 

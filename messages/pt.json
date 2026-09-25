@@ -22,6 +22,7 @@
     "notifications": "Notificações",
     "contacts": "Contatos",
     "pipelines": "Pipelines",
+    "appointments": "Agendamentos",
     "broadcasts": "Disparos",
     "automations": "Automações",
     "flows": "Fluxos",
@@ -47,6 +48,7 @@
     "notifications": "Notificações",
     "contacts": "Contatos",
     "pipelines": "Pipelines",
+    "appointments": "Agendamentos",
     "broadcasts": "Disparos",
     "automations": "Automações",
     "settings": "Configurações",
@@ -57,6 +59,47 @@
     "menuProfile": "Perfil",
     "menuSettings": "Configurações",
     "menuSignOut": "Sair"
+  },
+  "Appointments": {
+    "title": "Agendamentos",
+    "description": "Gerencie serviços agendáveis, horários da equipe e compromissos do calendário.",
+    "tabs": {
+      "calendar": "Calendário",
+      "services": "Serviços",
+      "staff": "Equipe",
+      "availability": "Horários e Exceções"
+    },
+    "actions": {
+      "newBooking": "Novo agendamento",
+      "addService": "Adicionar serviço",
+      "addStaff": "Adicionar profissional",
+      "reschedule": "Reagendar",
+      "cancel": "Cancelar",
+      "markCompleted": "Marcar como concluído",
+      "markNoShow": "Marcar como não compareceu",
+      "openConversation": "Abrir conversa",
+      "save": "Salvar alterações",
+      "saving": "Salvando..."
+    },
+    "stats": {
+      "today": "Hoje",
+      "confirmed": "Confirmados",
+      "pending": "Pendentes",
+      "completed": "Concluídos",
+      "cancelled": "Cancelados",
+      "noShow": "Não compareceu"
+    },
+    "views": {
+      "day": "Dia",
+      "week": "Semana",
+      "month": "Mês",
+      "today": "Hoje"
+    },
+    "filters": {
+      "allStaff": "Toda a equipe",
+      "allServices": "Todos os serviços",
+      "allStatuses": "Todos os status"
+    }
   },
   "ModeToggle": {
     "switchMode": "Mudar para o modo {mode}"
@@ -1217,7 +1260,13 @@
         "fileUploaded": "Arquivo enviado.",
         "uploadFailed": "Falha no upload.",
         "fileTooLarge": "O arquivo tem {size} MB — o limite é 16 MB.",
-        "defaultOptionTitle": "Opção"
+        "defaultOptionTitle": "Opção",
+        "bookServiceLabel": "Serviço (opcional, o cliente escolhe se não selecionado)",
+        "bookStaffLabel": "Profissional (opcional, qualquer disponível se não selecionado)",
+        "bookDaysLabel": "Janela de agendamento (dias)",
+        "bookConfirmationLabel": "Mensagem de confirmação (opcional, suporta variáveis de agendamento)",
+        "anyProvider": "Qualquer profissional disponível",
+        "customerPicksService": "Perguntar ao cliente (lista dinâmica)"
       },
       "categories": {
         "messaging": "Mensagens",
@@ -1256,6 +1305,10 @@
         "set_tag": {
           "label": "Marcar contato",
           "blurb": "Adiciona ou remove uma tag do contato"
+        },
+        "book_appointment": {
+          "label": "Agendar consulta",
+          "blurb": "Guia o cliente para agendar uma consulta"
         },
         "handoff": {
           "label": "Transferir para agente",

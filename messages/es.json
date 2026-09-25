@@ -22,6 +22,7 @@
     "notifications": "Notificaciones",
     "contacts": "Contactos",
     "pipelines": "Pipelines",
+    "appointments": "Citas",
     "broadcasts": "Difusiones",
     "automations": "Automatizaciones",
     "flows": "Flujos",
@@ -47,6 +48,7 @@
     "notifications": "Notificaciones",
     "contacts": "Contactos",
     "pipelines": "Pipelines",
+    "appointments": "Citas",
     "broadcasts": "Difusiones",
     "automations": "Automatizaciones",
     "settings": "Configuración",
@@ -57,6 +59,47 @@
     "menuProfile": "Perfil",
     "menuSettings": "Configuración",
     "menuSignOut": "Cerrar sesión"
+  },
+  "Appointments": {
+    "title": "Citas",
+    "description": "Gestiona servicios reservables, horarios del personal y citas del calendario.",
+    "tabs": {
+      "calendar": "Calendario",
+      "services": "Servicios",
+      "staff": "Personal",
+      "availability": "Horarios y Excepciones"
+    },
+    "actions": {
+      "newBooking": "Nueva reserva",
+      "addService": "Agregar servicio",
+      "addStaff": "Agregar personal",
+      "reschedule": "Reprogramar",
+      "cancel": "Cancelar",
+      "markCompleted": "Marcar como completada",
+      "markNoShow": "Marcar como no presentado",
+      "openConversation": "Abrir conversación",
+      "save": "Guardar cambios",
+      "saving": "Guardando..."
+    },
+    "stats": {
+      "today": "Hoy",
+      "confirmed": "Confirmadas",
+      "pending": "Pendientes",
+      "completed": "Completadas",
+      "cancelled": "Canceladas",
+      "noShow": "No presentado"
+    },
+    "views": {
+      "day": "Día",
+      "week": "Semana",
+      "month": "Mes",
+      "today": "Hoy"
+    },
+    "filters": {
+      "allStaff": "Todo el personal",
+      "allServices": "Todos los servicios",
+      "allStatuses": "Todos los estados"
+    }
   },
   "ModeToggle": {
     "switchMode": "Cambiar al modo {mode}"
@@ -1217,7 +1260,13 @@
         "fileUploaded": "Archivo subido.",
         "uploadFailed": "Error al subir.",
         "fileTooLarge": "El archivo pesa {size} MB; el límite es 16 MB.",
-        "defaultOptionTitle": "Opción"
+        "defaultOptionTitle": "Opción",
+        "bookServiceLabel": "Servicio (opcional, el cliente elige si no está seleccionado)",
+        "bookStaffLabel": "Proveedor (opcional, cualquier proveedor si no está seleccionado)",
+        "bookDaysLabel": "Ventana de reserva (días)",
+        "bookConfirmationLabel": "Mensaje de confirmación (opcional, admite variables de cita)",
+        "anyProvider": "Cualquier proveedor disponible",
+        "customerPicksService": "Preguntar al cliente (lista dinámica)"
       },
       "categories": {
         "messaging": "Mensajería",
@@ -1256,6 +1305,10 @@
         "set_tag": {
           "label": "Etiquetar contacto",
           "blurb": "Agrega o quita una etiqueta del contacto"
+        },
+        "book_appointment": {
+          "label": "Reservar cita",
+          "blurb": "Guía al cliente para reservar una cita"
         },
         "handoff": {
           "label": "Transferir a agente",
