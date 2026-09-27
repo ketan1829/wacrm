@@ -234,14 +234,30 @@ export default function BroadcastsPage() {
             <TableBody>
               {broadcasts.map((broadcast) => {
                 const status = getBroadcastStatus(broadcast.status);
+                const isDraft = broadcast.status === 'draft';
+                const isScheduled = broadcast.status === 'scheduled';
+
                 return (
                   <TableRow
                     key={broadcast.id}
                     className="cursor-pointer border-border hover:bg-muted/50"
-                    onClick={() => router.push(`/broadcasts/${broadcast.id}`)}
+                    onClick={() =>
+                      router.push(
+                        isDraft
+                          ? `/broadcasts/new?draftId=${broadcast.id}`
+                          : `/broadcasts/${broadcast.id}`,
+                      )
+                    }
                   >
                     <TableCell className="font-medium text-foreground">
-                      {broadcast.name}
+                      <div className="flex items-center gap-2">
+                        <span>{broadcast.name}</span>
+                        {isDraft && (
+                          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                            Edit Draft
+                          </span>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell className="hidden text-muted-foreground md:table-cell">
                       {broadcast.template_name}
@@ -277,7 +293,26 @@ export default function BroadcastsPage() {
                       </span>
                     </TableCell>
                     <TableCell className="hidden text-muted-foreground sm:table-cell">
-                      {new Date(broadcast.created_at).toLocaleDateString()}
+                      {isScheduled && broadcast.scheduled_at ? (
+                        <div className="flex flex-col text-xs">
+                          <span className="font-medium text-foreground">
+                            {new Date(broadcast.scheduled_at).toLocaleDateString([], {
+                              month: 'short',
+                              day: 'numeric',
+                            })}{' '}
+                            ·{' '}
+                            {new Date(broadcast.scheduled_at).toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}
+                          </span>
+                          <span className="text-[10px] text-primary">
+                            Scheduled ({broadcast.timezone || 'UTC'})
+                          </span>
+                        </div>
+                      ) : (
+                        new Date(broadcast.created_at).toLocaleDateString()
+                      )}
                     </TableCell>
                   </TableRow>
                 );

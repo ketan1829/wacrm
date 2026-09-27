@@ -422,6 +422,8 @@ export interface Broadcast {
   template_variables?: Record<string, unknown>;
   audience_filter?: Record<string, unknown>;
   scheduled_at?: string;
+  timezone?: string;
+  header_media_url?: string;
   status: BroadcastStatus;
   total_recipients: number;
   sent_count: number;
