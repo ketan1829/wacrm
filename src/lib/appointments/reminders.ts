@@ -44,12 +44,19 @@ export async function processAppointmentReminders(
     result.errors.push(`24h query error: ${err24.message}`);
   } else if (due24) {
     for (const app of due24 as Appointment[]) {
+      // Atomic claim to guarantee idempotency across concurrent sweeps
+      const { data: claim } = await db
+        .from("appointments")
+        .update({ reminder_sent_24h: true })
+        .eq("id", app.id)
+        .eq("reminder_sent_24h", false)
+        .select("id")
+        .maybeSingle();
+
+      if (!claim) continue;
+
       try {
         await sendAppointmentReminder(db, app, "24h");
-        await db
-          .from("appointments")
-          .update({ reminder_sent_24h: true })
-          .eq("id", app.id);
         result.processed24h++;
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -80,12 +87,19 @@ export async function processAppointmentReminders(
     result.errors.push(`2h query error: ${err2.message}`);
   } else if (due2) {
     for (const app of due2 as Appointment[]) {
+      // Atomic claim to guarantee idempotency across concurrent sweeps
+      const { data: claim } = await db
+        .from("appointments")
+        .update({ reminder_sent_2h: true })
+        .eq("id", app.id)
+        .eq("reminder_sent_2h", false)
+        .select("id")
+        .maybeSingle();
+
+      if (!claim) continue;
+
       try {
         await sendAppointmentReminder(db, app, "2h");
-        await db
-          .from("appointments")
-          .update({ reminder_sent_2h: true })
-          .eq("id", app.id);
         result.processed2h++;
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);

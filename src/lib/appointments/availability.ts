@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "./admin-client";
+import { hasStaffConflict } from "./conflicts";
 import type {
   AppointmentService,
   AppointmentStaff,
@@ -7,6 +8,8 @@ import type {
   AppointmentAvailabilityException,
   TimeSlot,
   AvailableDate,
+  CheckAvailabilityInput,
+  CheckAvailabilityResult,
 } from "./types";
 
 export interface GetAvailableSlotsParams {
@@ -39,10 +42,10 @@ export function localTimeToUtc(
   const [year, month, day] = dateStr.split("-").map(Number);
   const [hours, minutes] = timeStr.split(":").map(Number);
 
-  // Guess UTC time
+  // Initial UTC guess
   const utcGuess = new Date(Date.UTC(year, month - 1, day, hours, minutes, 0));
 
-  // Determine timezone offset using Intl
+  // Determine timezone offset using Intl.DateTimeFormat
   const formatter = new Intl.DateTimeFormat("en-US", {
     timeZone: timezone,
     year: "numeric",
@@ -102,11 +105,10 @@ export function getTodayDateString(timezone: string = "Asia/Kolkata"): string {
 }
 
 /**
- * Calculate day of week (0=Sunday, 1=Monday, ..., 6=Saturday) for "YYYY-MM-DD"
+ * Calculate day of week (0=Sunday, 1=Monday, ..., 6=Saturday) for "YYYY-MM-DD".
  */
 export function getDayOfWeekForDate(dateStr: string): number {
   const [year, month, day] = dateStr.split("-").map(Number);
-  // Noon UTC avoids any boundary issues
   const d = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
   return d.getUTCDay();
 }
@@ -124,7 +126,17 @@ const DEFAULT_WORKING_HOURS = [
 ];
 
 /**
- * Core availability engine: returns actual bookable slots for a service and date.
+ * Central availability calculation engine:
+ * Computes available slots for a given service and date in real-time.
+ * Respects:
+ *   - Provider-service eligibility (mappings if exist, all active if none)
+ *   - "Any Provider" aggregation when staffId is omitted/null
+ *   - Multiple working intervals per day (lunch/breaks)
+ *   - Availability exceptions (clinic-wide or staff-specific)
+ *   - Service duration and buffers (before/after)
+ *   - Active WACRM appointments
+ *   - External busy periods (Google / personal / meetings)
+ *   - Lead-time / past time exclusion for today
  */
 export async function getAvailableSlots({
   accountId,
@@ -153,14 +165,34 @@ export async function getAvailableSlots({
     return { date, timezone, service: null, slots: [] };
   }
 
-  // 2. Fetch eligible staff
+  // 2. Fetch eligible staff based on mapping rules:
+  //    - If appointment_staff_services has mappings for this service, ONLY those staff are eligible.
+  //    - If no mappings exist, ALL active staff for the account are eligible.
+  const { data: mappedStaffServices } = await db
+    .from("appointment_staff_services")
+    .select("staff_id")
+    .eq("service_id", serviceId);
+
+  const mappedStaffIds = (mappedStaffServices || []).map(
+    (m: { staff_id: string }) => m.staff_id,
+  );
+  const hasMappings = mappedStaffIds.length > 0;
+
   let staffList: AppointmentStaff[] = [];
 
-  if (staffId) {
+  const effectiveStaffId =
+    staffId && staffId !== "any" ? staffId : null;
+
+  if (effectiveStaffId) {
+    // If mappings exist and this staff is not mapped, they cannot perform the service
+    if (hasMappings && !mappedStaffIds.includes(effectiveStaffId)) {
+      return { date, timezone, service, slots: [] };
+    }
+
     const { data: staff } = await db
       .from("appointment_staff")
       .select("*")
-      .eq("id", staffId)
+      .eq("id", effectiveStaffId)
       .eq("account_id", accountId)
       .eq("is_active", true)
       .maybeSingle();
@@ -169,31 +201,19 @@ export async function getAvailableSlots({
       staffList = [staff];
     }
   } else {
-    // Check staff mapped to this service
-    const { data: mappedStaffServices } = await db
-      .from("appointment_staff_services")
-      .select("staff_id")
-      .eq("service_id", serviceId);
+    // "Any Provider": pull all eligible active staff
+    let staffQuery = db
+      .from("appointment_staff")
+      .select("*")
+      .eq("account_id", accountId)
+      .eq("is_active", true);
 
-    const mappedStaffIds = (mappedStaffServices || []).map((m: { staff_id: string }) => m.staff_id);
-
-    if (mappedStaffIds.length > 0) {
-      const { data: staff } = await db
-        .from("appointment_staff")
-        .select("*")
-        .eq("account_id", accountId)
-        .eq("is_active", true)
-        .in("id", mappedStaffIds);
-      staffList = staff || [];
-    } else {
-      // If no explicit staff_services mappings exist, all active staff can perform the service
-      const { data: staff } = await db
-        .from("appointment_staff")
-        .select("*")
-        .eq("account_id", accountId)
-        .eq("is_active", true);
-      staffList = staff || [];
+    if (hasMappings) {
+      staffQuery = staffQuery.in("id", mappedStaffIds);
     }
+
+    const { data: staff } = await staffQuery;
+    staffList = staff || [];
   }
 
   if (staffList.length === 0) {
@@ -208,12 +228,17 @@ export async function getAvailableSlots({
     .is("staff_id", null)
     .eq("exception_date", date);
 
-  if (accountExceptions && accountExceptions.some((e: AppointmentAvailabilityException) => e.is_unavailable)) {
-    // Clinic is closed
+  if (
+    accountExceptions &&
+    accountExceptions.some(
+      (e: AppointmentAvailabilityException) => e.is_unavailable,
+    )
+  ) {
+    // Entire clinic/account is closed on this date
     return { date, timezone, service, slots: [] };
   }
 
-  // 4. Fetch staff exceptions for this date
+  // 4. Fetch staff-specific exceptions for this date
   const staffIds = staffList.map((s) => s.id);
   const { data: staffExceptions } = await db
     .from("appointment_availability_exceptions")
@@ -231,7 +256,7 @@ export async function getAvailableSlots({
     }
   }
 
-  // 5. Fetch regular working hours for day of week
+  // 5. Fetch regular working hours for day of week (supports multiple intervals / lunch breaks)
   const dayOfWeek = getDayOfWeekForDate(date);
   const { data: regularHours } = await db
     .from("appointment_availability")
@@ -247,7 +272,7 @@ export async function getAvailableSlots({
     hoursMap.set(h.staff_id, existing);
   }
 
-  // Check if staff has any availability configured at all
+  // Check which staff have explicitly configured availability
   const { data: anyAvailabilityStaff } = await db
     .from("appointment_availability")
     .select("staff_id")
@@ -258,8 +283,7 @@ export async function getAvailableSlots({
     (anyAvailabilityStaff || []).map((h: { staff_id: string }) => h.staff_id),
   );
 
-  // 6. Fetch existing appointments for these staff on this date
-  // Window covers the full day in target timezone
+  // 6. Fetch existing confirmed/pending appointments on this date
   const dayStartUtc = localTimeToUtc(date, "00:00", timezone);
   const dayEndUtc = localTimeToUtc(date, "23:59:59", timezone);
 
@@ -272,14 +296,36 @@ export async function getAvailableSlots({
     .lt("start_at", dayEndUtc.toISOString())
     .gt("end_at", dayStartUtc.toISOString());
 
-  const appointmentsByStaff = new Map<string, Array<{ start: number; end: number }>>();
+  const blockedByStaff = new Map<string, Array<{ start: number; end: number }>>();
   for (const app of existingAppointments || []) {
-    const list = appointmentsByStaff.get(app.staff_id) || [];
+    const list = blockedByStaff.get(app.staff_id) || [];
     list.push({
       start: new Date(app.start_at).getTime(),
       end: new Date(app.end_at).getTime(),
     });
-    appointmentsByStaff.set(app.staff_id, list);
+    blockedByStaff.set(app.staff_id, list);
+  }
+
+  // 6b. Fetch external busy periods (Google meetings, personal blocks)
+  try {
+    const { data: existingBusy } = await db
+      .from("appointment_busy_periods")
+      .select("staff_id, start_at, end_at")
+      .eq("account_id", accountId)
+      .in("staff_id", staffIds)
+      .lt("start_at", dayEndUtc.toISOString())
+      .gt("end_at", dayStartUtc.toISOString());
+
+    for (const b of existingBusy || []) {
+      const list = blockedByStaff.get(b.staff_id) || [];
+      list.push({
+        start: new Date(b.start_at).getTime(),
+        end: new Date(b.end_at).getTime(),
+      });
+      blockedByStaff.set(b.staff_id, list);
+    }
+  } catch {
+    // If appointment_busy_periods table is not yet migrated in test env, ignore
   }
 
   // 7. Calculate slots per staff member
@@ -288,10 +334,10 @@ export async function getAvailableSlots({
   const minBookingTime = nowUtc + 15 * 60 * 1000;
 
   const durationMs = service.duration_minutes * 60 * 1000;
-  const bufferBeforeMs = service.buffer_before_minutes * 60 * 1000;
-  const bufferAfterMs = service.buffer_after_minutes * 60 * 1000;
+  const bufferBeforeMs = (service.buffer_before_minutes || 0) * 60 * 1000;
+  const bufferAfterMs = (service.buffer_after_minutes || 0) * 60 * 1000;
 
-  // Grid step: 15 minutes or 30 minutes (minimum 15, maximum 30)
+  // Grid step: 15 minutes or 30 minutes
   const stepMs = (service.duration_minutes % 30 === 0 ? 30 : 15) * 60 * 1000;
 
   const candidateSlotsByTime = new Map<string, TimeSlot>();
@@ -326,10 +372,17 @@ export async function getAvailableSlots({
           endStr: h.end_time,
         }));
       } else if (!staffWithConfiguredHours.has(staff.id)) {
-        // Fallback default hours for staff who haven't set up custom schedule yet
-        const defaultForDay = DEFAULT_WORKING_HOURS.find((h) => h.day_of_week === dayOfWeek);
+        // Fallback default hours for staff without custom schedule
+        const defaultForDay = DEFAULT_WORKING_HOURS.find(
+          (h) => h.day_of_week === dayOfWeek,
+        );
         if (defaultForDay) {
-          intervals = [{ startStr: defaultForDay.start_time, endStr: defaultForDay.end_time }];
+          intervals = [
+            {
+              startStr: defaultForDay.start_time,
+              endStr: defaultForDay.end_time,
+            },
+          ];
         }
       }
     }
@@ -338,7 +391,7 @@ export async function getAvailableSlots({
       continue;
     }
 
-    const staffBookings = appointmentsByStaff.get(staff.id) || [];
+    const staffBookings = blockedByStaff.get(staff.id) || [];
 
     for (const interval of intervals) {
       const intervalStartUtc = localTimeToUtc(date, interval.startStr, timezone);
@@ -349,23 +402,37 @@ export async function getAvailableSlots({
       while (currentSlotStart + durationMs <= intervalEndUtc.getTime()) {
         const slotEnd = currentSlotStart + durationMs;
 
+        // Buffers must fit within the provider's working shift interval:
+        const blockedStart = currentSlotStart - bufferBeforeMs;
+        const blockedEnd = slotEnd + bufferAfterMs;
+
+        if (
+          blockedStart < intervalStartUtc.getTime() ||
+          blockedEnd > intervalEndUtc.getTime()
+        ) {
+          currentSlotStart += stepMs;
+          continue;
+        }
+
         // Skip slots in the past
         if (currentSlotStart < minBookingTime) {
           currentSlotStart += stepMs;
           continue;
         }
 
-        // Slot interval with buffers
-        const blockedStart = currentSlotStart - bufferBeforeMs;
-        const blockedEnd = slotEnd + bufferAfterMs;
-
-        // Check conflicts with existing appointments
+        // Check conflicts with existing appointments or busy periods
         const hasConflict = staffBookings.some((booking) => {
           return booking.start < blockedEnd && booking.end > blockedStart;
         });
 
-        const slotTimeLabel = formatTimeInTimezone(new Date(currentSlotStart), timezone);
-        const slotEndTimeLabel = formatTimeInTimezone(new Date(slotEnd), timezone);
+        const slotTimeLabel = formatTimeInTimezone(
+          new Date(currentSlotStart),
+          timezone,
+        );
+        const slotEndTimeLabel = formatTimeInTimezone(
+          new Date(slotEnd),
+          timezone,
+        );
 
         const slotObj: TimeSlot = {
           start: slotTimeLabel,
@@ -375,15 +442,27 @@ export async function getAvailableSlots({
           available: !hasConflict,
           staff_id: staff.id,
           staff_name: staff.name,
+          available_staff_ids: !hasConflict ? [staff.id] : [],
         };
 
         const existingSlot = candidateSlotsByTime.get(slotTimeLabel);
 
         if (!existingSlot) {
           candidateSlotsByTime.set(slotTimeLabel, slotObj);
-        } else if (!existingSlot.available && slotObj.available) {
-          // If previous staff was booked but this staff is free, mark available!
-          candidateSlotsByTime.set(slotTimeLabel, slotObj);
+        } else {
+          // If Any Provider mode, multiple staff may be free
+          if (!hasConflict) {
+            existingSlot.available = true;
+            existingSlot.available_staff_ids =
+              existingSlot.available_staff_ids || [];
+            if (!existingSlot.available_staff_ids.includes(staff.id)) {
+              existingSlot.available_staff_ids.push(staff.id);
+            }
+            if (!existingSlot.staff_id || existingSlot.staff_id === staff.id) {
+              existingSlot.staff_id = staff.id;
+              existingSlot.staff_name = staff.name;
+            }
+          }
         }
 
         currentSlotStart += stepMs;
@@ -405,7 +484,7 @@ export async function getAvailableSlots({
 }
 
 /**
- * Returns available dates in a window (e.g. next 14 days) indicating slot availability.
+ * Returns available dates in a window indicating slot availability.
  */
 export async function getAvailableDates({
   accountId,
@@ -457,3 +536,135 @@ export async function getAvailableDates({
 
   return results;
 }
+
+/**
+ * Central pre-booking availability verification helper.
+ * Reusable across manual booking, Flow engine, API routes, and future AI.
+ */
+export async function checkAvailability({
+  accountId,
+  serviceId,
+  staffId,
+  startAt,
+  endAt,
+  excludeAppointmentId,
+  client,
+}: CheckAvailabilityInput & { client?: SupabaseClient }): Promise<CheckAvailabilityResult> {
+  const db = client ?? supabaseAdmin();
+  const start = new Date(startAt);
+  const end = new Date(endAt);
+
+  if (isNaN(start.getTime()) || isNaN(end.getTime()) || end <= start) {
+    return { available: false, reason: "INVALID_TIME_RANGE" };
+  }
+
+  // 1. Service check
+  const { data: service } = await db
+    .from("appointment_services")
+    .select("*")
+    .eq("id", serviceId)
+    .eq("account_id", accountId)
+    .maybeSingle();
+
+  if (!service || !service.is_active) {
+    return { available: false, reason: "SERVICE_INACTIVE" };
+  }
+
+  // 2. Staff check & mapping eligibility
+  const { data: mappedStaff } = await db
+    .from("appointment_staff_services")
+    .select("staff_id")
+    .eq("service_id", serviceId);
+
+  const mappedIds = (mappedStaff || []).map((m: { staff_id: string }) => m.staff_id);
+
+  let candidateStaffIds: string[] = [];
+  if (staffId && staffId !== "any") {
+    if (mappedIds.length > 0 && !mappedIds.includes(staffId)) {
+      return { available: false, reason: "PROVIDER_NOT_ELIGIBLE" };
+    }
+    const { data: staff } = await db
+      .from("appointment_staff")
+      .select("id, is_active")
+      .eq("id", staffId)
+      .eq("account_id", accountId)
+      .maybeSingle();
+
+    if (!staff || !staff.is_active) {
+      return { available: false, reason: "STAFF_INACTIVE" };
+    }
+    candidateStaffIds = [staff.id];
+  } else {
+    // Any provider: all active eligible staff
+    let q = db
+      .from("appointment_staff")
+      .select("id")
+      .eq("account_id", accountId)
+      .eq("is_active", true);
+
+    if (mappedIds.length > 0) {
+      q = q.in("id", mappedIds);
+    }
+    const { data: allStaff } = await q;
+    candidateStaffIds = (allStaff || []).map((s: { id: string }) => s.id);
+
+    if (candidateStaffIds.length === 0) {
+      return { available: false, reason: "PROVIDER_NOT_ELIGIBLE" };
+    }
+  }
+
+  // 3. For each candidate staff, check conflicts against active appointments and busy periods
+  for (const sId of candidateStaffIds) {
+    const conflict = await hasStaffConflict({
+      accountId,
+      staffId: sId,
+      startAt: start,
+      endAt: end,
+      excludeAppointmentId,
+      client: db,
+    });
+
+    if (!conflict) {
+      return { available: true, eligibleStaffId: sId };
+    }
+  }
+
+  return { available: false, reason: "SLOT_ALREADY_BOOKED" };
+}
+
+/**
+ * Validates whether a proposed slot (including buffer_before and buffer_after)
+ * fits entirely within the working shift boundary interval.
+ */
+export function isSlotWithinShiftWithBuffers(
+  slotStartMs: number,
+  slotEndMs: number,
+  shiftStartMs: number,
+  shiftEndMs: number,
+  bufferBeforeMinutes: number = 0,
+  bufferAfterMinutes: number = 0,
+): boolean {
+  const blockedStart = slotStartMs - bufferBeforeMinutes * 60 * 1000;
+  const blockedEnd = slotEndMs + bufferAfterMinutes * 60 * 1000;
+  return blockedStart >= shiftStartMs && blockedEnd <= shiftEndMs;
+}
+
+/**
+ * Filters staff by service eligibility rules:
+ * - If mappings exist for the service, only active staff in those mappings are eligible.
+ * - If no mappings exist for the service, all active staff in the account are eligible.
+ * - Inactive staff are excluded in all cases.
+ */
+export function filterStaffByServiceEligibility(
+  staffList: AppointmentStaff[],
+  serviceId: string,
+  mappings: Array<{ staff_id: string; service_id: string }>,
+): AppointmentStaff[] {
+  const serviceMappings = mappings.filter((m) => m.service_id === serviceId);
+  if (serviceMappings.length > 0) {
+    const mappedIds = new Set(serviceMappings.map((m) => m.staff_id));
+    return staffList.filter((s) => s.is_active && mappedIds.has(s.id));
+  }
+  return staffList.filter((s) => s.is_active);
+}
+

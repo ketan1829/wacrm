@@ -1,4 +1,5 @@
 import type { Contact } from "@/types";
+import type { AppointmentErrorCode } from "./status";
 
 export type AppointmentStatus =
   | "pending"
@@ -13,7 +14,8 @@ export type AppointmentSource =
   | "whatsapp_flow"
   | "whatsapp_ai"
   | "api"
-  | "manual";
+  | "manual"
+  | "flow";
 
 export interface AppointmentService {
   id: string;
@@ -76,6 +78,41 @@ export interface AppointmentAvailabilityException {
   updated_at: string;
 }
 
+/**
+ * Separate representation of blocked or external busy intervals
+ * (Google meetings, personal leave, lunch blocks) that subtract from availability
+ * without masquerading as customer appointments.
+ */
+export interface AppointmentBusyPeriod {
+  id: string;
+  account_id: string;
+  staff_id: string;
+  start_at: string; // ISO UTC
+  end_at: string; // ISO UTC
+  title?: string | null;
+  source: "manual" | "external_calendar" | "internal";
+  external_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Provider-neutral two-way sync links mapping WACRM appointments to external calendar events.
+ */
+export interface AppointmentCalendarLink {
+  id: string;
+  account_id: string;
+  appointment_id: string;
+  provider: "google" | "outlook";
+  external_calendar_id: string;
+  external_event_id: string;
+  sync_status: "not_synced" | "synced" | "failed" | "pending";
+  last_synced_at?: string | null;
+  sync_error?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Appointment {
   id: string;
   account_id: string;
@@ -96,6 +133,8 @@ export interface Appointment {
   cancelled_by?: string | null;
   rescheduled_from_id?: string | null;
   rescheduled_to_id?: string | null;
+  rescheduled_at?: string | null;
+  reschedule_reason?: string | null;
   reminder_sent_24h?: boolean;
   reminder_sent_2h?: boolean;
   created_by?: string | null;
@@ -105,6 +144,7 @@ export interface Appointment {
   service?: AppointmentService;
   staff?: AppointmentStaff;
   contact?: Contact;
+  calendar_links?: AppointmentCalendarLink[];
 }
 
 export interface TimeSlot {
@@ -115,6 +155,7 @@ export interface TimeSlot {
   available: boolean;
   staff_id: string;
   staff_name: string;
+  available_staff_ids?: string[];
 }
 
 export interface AvailableDate {
@@ -127,7 +168,7 @@ export interface AvailableDate {
 export interface CreateAppointmentInput {
   accountId: string;
   serviceId: string;
-  staffId: string;
+  staffId?: string | null; // Optional: null/omitted triggers atomic "Any Provider" assignment
   startAt: string; // ISO UTC or Date
   endAt: string; // ISO UTC or Date
   customerName: string;
@@ -146,8 +187,9 @@ export interface RescheduleAppointmentInput {
   accountId: string;
   newStartAt: string;
   newEndAt: string;
-  staffId?: string;
-  reason?: string;
+  staffId?: string | null;
+  rescheduleReason?: string;
+  reason?: string; // Backwards-compatible alias for rescheduleReason
   cancelledBy?: string;
 }
 
@@ -156,4 +198,26 @@ export interface CancelAppointmentInput {
   accountId: string;
   reason?: string;
   cancelledBy?: string;
+}
+
+export interface CheckAvailabilityInput {
+  accountId: string;
+  serviceId: string;
+  staffId?: string | null;
+  startAt: string;
+  endAt: string;
+  excludeAppointmentId?: string;
+}
+
+export interface CheckAvailabilityResult {
+  available: boolean;
+  reason?: string;
+  eligibleStaffId?: string;
+}
+
+export interface BookingResult {
+  ok: boolean;
+  appointment?: Appointment;
+  error?: string;
+  code?: AppointmentErrorCode;
 }

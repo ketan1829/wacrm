@@ -4,6 +4,7 @@ import { createAppointment } from "@/lib/appointments/booking";
 
 /**
  * GET /api/appointments — list appointments for the account with optional filters.
+ * Validates date ranges to prevent accidental excessive full-table loads.
  * POST /api/appointments — create a new appointment via the booking engine.
  */
 
@@ -19,28 +20,68 @@ export async function GET(request: Request) {
     const contactId = searchParams.get("contact_id");
     const status = searchParams.get("status");
 
+    // Date range validation
+    let startIso: string | undefined;
+    let endIso: string | undefined;
+
+    if (startDate) {
+      const sStr = startDate.includes("T") ? startDate : `${startDate}T00:00:00.000Z`;
+      const s = new Date(sStr);
+      if (isNaN(s.getTime())) {
+        return NextResponse.json({ error: "Invalid start_date parameter" }, { status: 400 });
+      }
+      startIso = s.toISOString();
+    }
+
+    if (endDate) {
+      const eStr = endDate.includes("T") ? endDate : `${endDate}T23:59:59.999Z`;
+      const e = new Date(eStr);
+      if (isNaN(e.getTime())) {
+        return NextResponse.json({ error: "Invalid end_date parameter" }, { status: 400 });
+      }
+      endIso = e.toISOString();
+    }
+
+    if (startIso && endIso) {
+      const sTime = new Date(startIso).getTime();
+      const eTime = new Date(endIso).getTime();
+      if (eTime < sTime) {
+        return NextResponse.json(
+          { error: "end_date must be greater than or equal to start_date" },
+          { status: 400 },
+        );
+      }
+      const maxSpanMs = 93 * 24 * 60 * 60 * 1000; // max 93 days (~3 months)
+      if (eTime - sTime > maxSpanMs) {
+        return NextResponse.json(
+          { error: "Date range cannot exceed 93 days" },
+          { status: 400 },
+        );
+      }
+    }
+
     let query = ctx.supabase
       .from("appointments")
       .select("*, service:appointment_services(*), staff:appointment_staff(*), contact:contacts(*)")
       .eq("account_id", ctx.accountId)
       .order("start_at", { ascending: true });
 
-    if (startDate) {
-      query = query.gte("start_at", new Date(startDate).toISOString());
+    if (startIso) {
+      query = query.gte("end_at", startIso);
     }
-    if (endDate) {
-      query = query.lte("start_at", new Date(endDate).toISOString());
+    if (endIso) {
+      query = query.lte("start_at", endIso);
     }
-    if (staffId) {
+    if (staffId && staffId !== "all") {
       query = query.eq("staff_id", staffId);
     }
-    if (serviceId) {
+    if (serviceId && serviceId !== "all") {
       query = query.eq("service_id", serviceId);
     }
     if (contactId) {
       query = query.eq("contact_id", contactId);
     }
-    if (status) {
+    if (status && status !== "all") {
       query = query.eq("status", status);
     }
 
@@ -76,9 +117,9 @@ export async function POST(request: Request) {
       status,
     } = body;
 
-    if (!service_id || !staff_id || !start_at || !end_at || !customer_name || !customer_phone) {
+    if (!service_id || !start_at || !end_at || !customer_name || !customer_phone) {
       return NextResponse.json(
-        { error: "Missing required fields (service_id, staff_id, start_at, end_at, customer_name, customer_phone)" },
+        { error: "Missing required fields (service_id, start_at, end_at, customer_name, customer_phone)" },
         { status: 400 },
       );
     }
@@ -87,15 +128,15 @@ export async function POST(request: Request) {
       {
         accountId: ctx.accountId,
         serviceId: service_id,
-        staffId: staff_id,
+        staffId: staff_id || null, // null triggers atomic Any Provider assignment
         startAt: start_at,
         endAt: end_at,
         customerName: customer_name,
         customerPhone: customer_phone,
         timezone: timezone || "Asia/Kolkata",
-        contactId: contact_id,
-        conversationId: conversation_id,
-        notes,
+        contactId: contact_id || null,
+        conversationId: conversation_id || null,
+        notes: notes || null,
         source: source || "dashboard",
         status: status || "confirmed",
         createdBy: ctx.userId,
@@ -104,7 +145,10 @@ export async function POST(request: Request) {
     );
 
     if (!result.ok) {
-      const statusCode = result.code === "SLOT_ALREADY_BOOKED" ? 409 : 400;
+      const statusCode =
+        result.code === "SLOT_ALREADY_BOOKED" || result.code === "SLOT_UNAVAILABLE"
+          ? 409
+          : 400;
       return NextResponse.json({ error: result.error, code: result.code }, { status: statusCode });
     }
 

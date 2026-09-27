@@ -1,7 +1,16 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { format, isSameDay } from "date-fns";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import {
+  format,
+  isSameDay,
+  startOfDay,
+  endOfDay,
+  startOfWeek,
+  endOfWeek,
+  startOfMonth,
+  endOfMonth,
+} from "date-fns";
 import {
   Calendar as CalendarIcon,
   Plus,
@@ -49,38 +58,77 @@ export default function AppointmentsPage() {
   // Modals
   const [bookingModalOpen, setBookingModalOpen] = useState(false);
   const [bookingPrefillDate, setBookingPrefillDate] = useState<string | undefined>();
+  const [rescheduleAppointment, setRescheduleAppointment] = useState<Appointment | null>(null);
   const [serviceDialogOpen, setServiceDialogOpen] = useState(false);
   const [editingService, setEditingService] = useState<AppointmentService | null>(null);
   const [staffDialogOpen, setStaffDialogOpen] = useState(false);
   const [editingStaff, setEditingStaff] = useState<AppointmentStaff | null>(null);
 
-  // Fetch all appointments, services, and staff
-  const loadData = useCallback(async () => {
+  // Compute visible date range based on viewMode and currentDate
+  const { startDateStr, endDateStr } = useMemo(() => {
+    let start: Date;
+    let end: Date;
+
+    if (viewMode === "day") {
+      start = startOfDay(currentDate);
+      end = endOfDay(currentDate);
+    } else if (viewMode === "week") {
+      start = startOfWeek(currentDate, { weekStartsOn: 1 });
+      end = endOfWeek(currentDate, { weekStartsOn: 1 });
+    } else {
+      const monthStart = startOfMonth(currentDate);
+      const monthEnd = endOfMonth(currentDate);
+      start = startOfWeek(monthStart, { weekStartsOn: 1 });
+      end = endOfWeek(monthEnd, { weekStartsOn: 1 });
+    }
+
+    return {
+      startDateStr: format(start, "yyyy-MM-dd"),
+      endDateStr: format(end, "yyyy-MM-dd"),
+    };
+  }, [currentDate, viewMode]);
+
+  // Fetch appointments for current visible date range
+  const loadAppointments = useCallback(async () => {
     try {
-      const [appRes, srvRes, stfRes] = await Promise.all([
-        fetch("/api/appointments"),
+      const res = await fetch(
+        `/api/appointments?start_date=${startDateStr}&end_date=${endDateStr}`
+      );
+      const data = await res.json();
+      if (data.appointments) {
+        setAppointments(data.appointments);
+      }
+    } catch (err) {
+      console.error("Failed to load appointments:", err);
+      toast.error("Failed to load appointments");
+    }
+  }, [startDateStr, endDateStr]);
+
+  // Fetch services and staff once
+  const loadMetadata = useCallback(async () => {
+    try {
+      const [srvRes, stfRes] = await Promise.all([
         fetch("/api/appointments/services"),
         fetch("/api/appointments/staff"),
       ]);
-
-      const appData = await appRes.json();
       const srvData = await srvRes.json();
       const stfData = await stfRes.json();
-
-      if (appData.appointments) setAppointments(appData.appointments);
       if (srvData.services) setServices(srvData.services);
       if (stfData.staff) setStaff(stfData.staff);
     } catch (err) {
-      console.error("Failed to load appointments data:", err);
-      toast.error("Failed to load appointments");
-    } finally {
-      setLoading(false);
+      console.error("Failed to load metadata:", err);
     }
   }, []);
 
+  // Initial load
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    loadMetadata();
+  }, [loadMetadata]);
+
+  // Load appointments whenever date window changes
+  useEffect(() => {
+    loadAppointments().finally(() => setLoading(false));
+  }, [loadAppointments]);
 
   // Appointment Drawer handler
   const handleSelectAppointment = (app: Appointment) => {
@@ -89,7 +137,14 @@ export default function AppointmentsPage() {
   };
 
   const handleOpenBooking = (prefillDate?: string) => {
+    setRescheduleAppointment(null);
     setBookingPrefillDate(prefillDate);
+    setBookingModalOpen(true);
+  };
+
+  const handleOpenReschedule = (app: Appointment) => {
+    setDrawerOpen(false);
+    setRescheduleAppointment(app);
     setBookingModalOpen(true);
   };
 
@@ -420,15 +475,23 @@ export default function AppointmentsPage() {
         appointment={selectedAppointment}
         open={drawerOpen}
         onOpenChange={setDrawerOpen}
-        onUpdated={loadData}
+        onUpdated={loadAppointments}
+        onRescheduleClick={handleOpenReschedule}
       />
 
-      {/* New Booking Modal */}
+      {/* New Booking / Reschedule Modal */}
       <AppointmentBookingModal
         open={bookingModalOpen}
-        onOpenChange={setBookingModalOpen}
-        onBooked={loadData}
+        onOpenChange={(open) => {
+          setBookingModalOpen(open);
+          if (!open) {
+            setRescheduleAppointment(null);
+            setBookingPrefillDate(undefined);
+          }
+        }}
+        onBooked={loadAppointments}
         preselectedDate={bookingPrefillDate}
+        rescheduleAppointment={rescheduleAppointment}
       />
 
       {/* Service Dialog */}
@@ -436,7 +499,7 @@ export default function AppointmentsPage() {
         open={serviceDialogOpen}
         onOpenChange={setServiceDialogOpen}
         service={editingService}
-        onSaved={loadData}
+        onSaved={loadMetadata}
       />
 
       {/* Staff Dialog */}
@@ -445,7 +508,7 @@ export default function AppointmentsPage() {
         onOpenChange={setStaffDialogOpen}
         staff={editingStaff}
         services={services}
-        onSaved={loadData}
+        onSaved={loadMetadata}
       />
     </div>
   );

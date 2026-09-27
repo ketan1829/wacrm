@@ -12,6 +12,7 @@ import {
   Loader2,
   Check,
   AlertTriangle,
+  RefreshCw,
 } from "lucide-react";
 import {
   Dialog,
@@ -33,10 +34,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type {
+  Appointment,
   AppointmentService,
   AppointmentStaff,
   TimeSlot,
-  AvailableDate,
 } from "@/lib/appointments/types";
 
 interface AppointmentBookingModalProps {
@@ -48,6 +49,7 @@ interface AppointmentBookingModalProps {
   preselectedContactId?: string;
   preselectedContactName?: string;
   preselectedContactPhone?: string;
+  rescheduleAppointment?: Appointment | null;
 }
 
 export function AppointmentBookingModal({
@@ -59,11 +61,12 @@ export function AppointmentBookingModal({
   preselectedContactId,
   preselectedContactName,
   preselectedContactPhone,
+  rescheduleAppointment,
 }: AppointmentBookingModalProps) {
   const [services, setServices] = useState<AppointmentService[]>([]);
   const [staffList, setStaffList] = useState<AppointmentStaff[]>([]);
   const [selectedServiceId, setSelectedServiceId] = useState<string>("");
-  const [selectedStaffId, setSelectedStaffId] = useState<string>(preselectedStaffId || "any");
+  const [selectedStaffId, setSelectedStaffId] = useState<string>("any");
   const [selectedDate, setSelectedDate] = useState<string>(
     preselectedDate || format(new Date(), "yyyy-MM-dd"),
   );
@@ -71,11 +74,14 @@ export function AppointmentBookingModal({
   const [selectedSlot, setSelectedSlot] = useState<TimeSlot | null>(null);
   const [loadingSlots, setLoadingSlots] = useState(false);
 
-  // Customer fields
-  const [customerName, setCustomerName] = useState(preselectedContactName || "");
-  const [customerPhone, setCustomerPhone] = useState(preselectedContactPhone || "");
+  // Customer & reschedule fields
+  const [customerName, setCustomerName] = useState("");
+  const [customerPhone, setCustomerPhone] = useState("");
   const [notes, setNotes] = useState("");
+  const [rescheduleReason, setRescheduleReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  const isReschedule = Boolean(rescheduleAppointment);
 
   // Load services and staff on open
   useEffect(() => {
@@ -91,14 +97,20 @@ export function AppointmentBookingModal({
         const staffData = await staffRes.json();
 
         if (servicesData.services) {
-          const active = servicesData.services.filter((s: AppointmentService) => s.is_active);
+          const active = servicesData.services.filter(
+            (s: AppointmentService) => s.is_active,
+          );
           setServices(active);
           if (active.length > 0 && !selectedServiceId) {
-            setSelectedServiceId(active[0].id);
+            setSelectedServiceId(
+              rescheduleAppointment?.service_id || active[0].id,
+            );
           }
         }
         if (staffData.staff) {
-          setStaffList(staffData.staff.filter((s: AppointmentStaff) => s.is_active));
+          setStaffList(
+            staffData.staff.filter((s: AppointmentStaff) => s.is_active),
+          );
         }
       } catch (e) {
         console.error("Failed to load booking metadata:", e);
@@ -106,15 +118,30 @@ export function AppointmentBookingModal({
     };
 
     loadMeta();
-  }, [open]);
+  }, [open, rescheduleAppointment]);
 
-  // Update prefilled values when props change
+  // Update prefilled values
   useEffect(() => {
-    if (preselectedDate) setSelectedDate(preselectedDate);
-    if (preselectedStaffId) setSelectedStaffId(preselectedStaffId);
-    if (preselectedContactName) setCustomerName(preselectedContactName);
-    if (preselectedContactPhone) setCustomerPhone(preselectedContactPhone);
-  }, [preselectedDate, preselectedStaffId, preselectedContactName, preselectedContactPhone]);
+    if (rescheduleAppointment) {
+      setSelectedServiceId(rescheduleAppointment.service_id);
+      setSelectedStaffId(rescheduleAppointment.staff_id || "any");
+      setCustomerName(rescheduleAppointment.customer_name);
+      setCustomerPhone(rescheduleAppointment.customer_phone);
+      setNotes(rescheduleAppointment.notes || "");
+    } else {
+      if (preselectedDate) setSelectedDate(preselectedDate);
+      if (preselectedStaffId) setSelectedStaffId(preselectedStaffId);
+      if (preselectedContactName) setCustomerName(preselectedContactName);
+      if (preselectedContactPhone) setCustomerPhone(preselectedContactPhone);
+    }
+  }, [
+    open,
+    rescheduleAppointment,
+    preselectedDate,
+    preselectedStaffId,
+    preselectedContactName,
+    preselectedContactPhone,
+  ]);
 
   // Fetch slots whenever service, staff, or date changes
   useEffect(() => {
@@ -125,7 +152,10 @@ export function AppointmentBookingModal({
       setLoadingSlots(true);
       setSelectedSlot(null);
       try {
-        const staffParam = selectedStaffId && selectedStaffId !== "any" ? `&staff_id=${selectedStaffId}` : "";
+        const staffParam =
+          selectedStaffId && selectedStaffId !== "any"
+            ? `&staff_id=${selectedStaffId}`
+            : "";
         const res = await fetch(
           `/api/appointments/availability?service_id=${selectedServiceId}&date=${selectedDate}${staffParam}`,
         );
@@ -148,42 +178,82 @@ export function AppointmentBookingModal({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedServiceId || !selectedSlot || !customerName.trim() || !customerPhone.trim()) {
-      toast.error("Please fill in all required fields and select an available time slot");
+    if (!selectedServiceId || !selectedSlot) {
+      toast.error("Please select a service and an available time slot");
+      return;
+    }
+
+    if (!isReschedule && (!customerName.trim() || !customerPhone.trim())) {
+      toast.error("Please fill in customer name and phone number");
       return;
     }
 
     setSubmitting(true);
     try {
-      const res = await fetch("/api/appointments", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          service_id: selectedServiceId,
-          staff_id: selectedSlot.staff_id,
-          start_at: selectedSlot.start_iso,
-          end_at: selectedSlot.end_iso,
-          customer_name: customerName.trim(),
-          customer_phone: customerPhone.trim(),
-          contact_id: preselectedContactId || null,
-          notes: notes.trim() || null,
-          source: "dashboard",
-          status: "confirmed",
-        }),
-      });
+      if (isReschedule && rescheduleAppointment) {
+        // Atomic Reschedule Endpoint
+        const res = await fetch(
+          `/api/appointments/${rescheduleAppointment.id}/reschedule`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              new_start_at: selectedSlot.start_iso,
+              new_end_at: selectedSlot.end_iso,
+              staff_id: selectedSlot.staff_id,
+              reschedule_reason: rescheduleReason.trim() || "Rescheduled by staff",
+            }),
+          },
+        );
 
-      const data = await res.json();
-      if (!res.ok) {
-        if (data.code === "SLOT_ALREADY_BOOKED") {
-          toast.error("This slot was just booked by someone else! Please pick another.");
-          // Refresh slots
-          setSelectedSlot(null);
-          return;
+        const data = await res.json();
+        if (!res.ok) {
+          if (data.code === "SLOT_ALREADY_BOOKED") {
+            toast.error(
+              "This slot was just booked by someone else! Please choose another slot.",
+            );
+            setSelectedSlot(null);
+            return;
+          }
+          throw new Error(data.error || "Failed to reschedule appointment");
         }
-        throw new Error(data.error || "Failed to create booking");
+
+        toast.success("Appointment rescheduled successfully!");
+      } else {
+        // Create Appointment Endpoint
+        const res = await fetch("/api/appointments", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            service_id: selectedServiceId,
+            staff_id:
+              selectedStaffId !== "any" ? selectedStaffId : selectedSlot.staff_id,
+            start_at: selectedSlot.start_iso,
+            end_at: selectedSlot.end_iso,
+            customer_name: customerName.trim(),
+            customer_phone: customerPhone.trim(),
+            contact_id: preselectedContactId || null,
+            notes: notes.trim() || null,
+            source: "dashboard",
+            status: "confirmed",
+          }),
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          if (data.code === "SLOT_ALREADY_BOOKED") {
+            toast.error(
+              "This slot was just booked by someone else! Please choose another slot.",
+            );
+            setSelectedSlot(null);
+            return;
+          }
+          throw new Error(data.error || "Failed to create booking");
+        }
+
+        toast.success("Appointment booked successfully!");
       }
 
-      toast.success("Appointment booked successfully!");
       onOpenChange(false);
       onBooked();
     } catch (err: unknown) {
@@ -194,15 +264,17 @@ export function AppointmentBookingModal({
     }
   };
 
-  const selectedService = services.find((s) => s.id === selectedServiceId);
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>New Appointment</DialogTitle>
+          <DialogTitle>
+            {isReschedule ? "Reschedule Appointment" : "New Appointment"}
+          </DialogTitle>
           <DialogDescription>
-            Schedule a confirmed appointment with real-time slot checking.
+            {isReschedule
+              ? "Select a new available date and time slot. Full history is preserved."
+              : "Schedule a confirmed appointment with real-time slot checking."}
           </DialogDescription>
         </DialogHeader>
 
@@ -210,7 +282,11 @@ export function AppointmentBookingModal({
           {/* Service Selector */}
           <div className="space-y-1.5">
             <Label htmlFor="service-select">Service *</Label>
-            <Select value={selectedServiceId} onValueChange={(v) => v && setSelectedServiceId(v)}>
+            <Select
+              value={selectedServiceId}
+              onValueChange={(v) => v && setSelectedServiceId(v)}
+              disabled={isReschedule}
+            >
               <SelectTrigger id="service-select">
                 <SelectValue placeholder="Select a service" />
               </SelectTrigger>
@@ -227,7 +303,10 @@ export function AppointmentBookingModal({
           {/* Staff Selector */}
           <div className="space-y-1.5">
             <Label htmlFor="staff-select">Provider</Label>
-            <Select value={selectedStaffId} onValueChange={(v) => v && setSelectedStaffId(v)}>
+            <Select
+              value={selectedStaffId}
+              onValueChange={(v) => v && setSelectedStaffId(v)}
+            >
               <SelectTrigger id="staff-select">
                 <SelectValue placeholder="Any Available Provider" />
               </SelectTrigger>
@@ -237,7 +316,7 @@ export function AppointmentBookingModal({
                   <SelectItem key={st.id} value={st.id}>
                     <div className="flex items-center gap-2">
                       <span
-                        className="h-2 w-2 rounded-full inline-block"
+                        className="h-2 w-2 rounded-full"
                         style={{ backgroundColor: st.color }}
                       />
                       <span>{st.name}</span>
@@ -250,102 +329,111 @@ export function AppointmentBookingModal({
 
           {/* Date Picker */}
           <div className="space-y-1.5">
-            <Label htmlFor="date-input">Date *</Label>
+            <Label htmlFor="booking-date">Date *</Label>
             <Input
-              id="date-input"
+              id="booking-date"
               type="date"
               value={selectedDate}
-              onChange={(e) => setSelectedDate(e.target.value)}
               min={format(new Date(), "yyyy-MM-dd")}
+              onChange={(e) => setSelectedDate(e.target.value)}
+              required
             />
           </div>
 
-          {/* Available Slots Grid */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label>Select Time Slot *</Label>
-              {loadingSlots && (
-                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  Checking availability...
-                </div>
-              )}
-            </div>
-
-            {!loadingSlots && availableSlots.length === 0 && (
-              <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">
-                No slots available on this date. Try another date or provider.
+          {/* Time Slot Picker */}
+          <div className="space-y-1.5">
+            <Label>Available Time Slots *</Label>
+            {loadingSlots ? (
+              <div className="flex items-center justify-center p-6 border rounded-lg bg-muted/20 text-muted-foreground text-xs">
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                Finding bookable slots...
+              </div>
+            ) : availableSlots.length === 0 ? (
+              <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
+                No slots available on this date for the selected provider.
+              </div>
+            ) : (
+              <div className="grid grid-cols-3 gap-2 max-h-48 overflow-y-auto p-1 border rounded-lg">
+                {availableSlots.map((slot) => {
+                  const isSelected =
+                    selectedSlot?.start_iso === slot.start_iso &&
+                    selectedSlot?.staff_id === slot.staff_id;
+                  return (
+                    <button
+                      key={`${slot.start_iso}-${slot.staff_id}`}
+                      type="button"
+                      disabled={!slot.available}
+                      onClick={() => setSelectedSlot(slot)}
+                      className={`p-2 text-xs rounded border transition-all text-left flex flex-col justify-between ${
+                        !slot.available
+                          ? "opacity-35 cursor-not-allowed bg-muted/40"
+                          : isSelected
+                            ? "border-primary bg-primary/10 text-primary font-semibold ring-1 ring-primary"
+                            : "hover:border-primary/50 bg-card hover:bg-muted/20"
+                      }`}
+                    >
+                      <span className="font-medium">{slot.start}</span>
+                      <span className="text-[10px] text-muted-foreground truncate">
+                        {slot.staff_name}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             )}
-
-            <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 max-h-48 overflow-y-auto p-1">
-              {availableSlots.map((slot) => {
-                const isSelected = selectedSlot?.start === slot.start;
-                return (
-                  <button
-                    key={slot.start}
-                    type="button"
-                    disabled={!slot.available}
-                    onClick={() => setSelectedSlot(slot)}
-                    className={`rounded-md border p-2 text-xs font-medium transition-all text-center relative ${
-                      !slot.available
-                        ? "opacity-30 bg-muted cursor-not-allowed line-through"
-                        : isSelected
-                          ? "border-primary bg-primary text-primary-foreground shadow-sm"
-                          : "border-border bg-card hover:border-primary/50 hover:bg-muted/50 text-foreground"
-                    }`}
-                  >
-                    <div>{slot.start}</div>
-                    {slot.staff_name && selectedStaffId === "any" && (
-                      <div className="text-[10px] opacity-75 truncate mt-0.5">
-                        {slot.staff_name}
-                      </div>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-            {selectedSlot && (
-              <p className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">
-                ✓ Selected: {selectedSlot.start} – {selectedSlot.end} with {selectedSlot.staff_name}
-              </p>
-            )}
           </div>
 
-          {/* Customer Details */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t">
+          {/* Reschedule Reason (if in reschedule mode) */}
+          {isReschedule && (
             <div className="space-y-1.5">
-              <Label htmlFor="customer-name">Customer Name *</Label>
+              <Label htmlFor="reschedule-reason">Reason for Rescheduling</Label>
               <Input
-                id="customer-name"
-                placeholder="Rahul Sharma"
-                value={customerName}
-                onChange={(e) => setCustomerName(e.target.value)}
-                required
+                id="reschedule-reason"
+                placeholder="e.g. Customer requested, doctor schedule change..."
+                value={rescheduleReason}
+                onChange={(e) => setRescheduleReason(e.target.value)}
               />
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="customer-phone">WhatsApp Phone *</Label>
-              <Input
-                id="customer-phone"
-                placeholder="+91 98765 43210"
-                value={customerPhone}
-                onChange={(e) => setCustomerPhone(e.target.value)}
-                required
-              />
-            </div>
-          </div>
+          )}
 
-          <div className="space-y-1.5">
-            <Label htmlFor="booking-notes">Notes (optional)</Label>
-            <Textarea
-              id="booking-notes"
-              placeholder="Special instructions or customer requests..."
-              rows={2}
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-            />
-          </div>
+          {/* Customer Details (only for new booking) */}
+          {!isReschedule && (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="cust-name">Customer Name *</Label>
+                  <Input
+                    id="cust-name"
+                    placeholder="Full name"
+                    value={customerName}
+                    onChange={(e) => setCustomerName(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="cust-phone">WhatsApp Phone *</Label>
+                  <Input
+                    id="cust-phone"
+                    placeholder="+919876543210"
+                    value={customerPhone}
+                    onChange={(e) => setCustomerPhone(e.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="booking-notes">Notes (optional)</Label>
+                <Textarea
+                  id="booking-notes"
+                  placeholder="Special instructions or preferences..."
+                  rows={2}
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                />
+              </div>
+            </>
+          )}
 
           <DialogFooter className="pt-2">
             <Button
@@ -356,17 +444,16 @@ export function AppointmentBookingModal({
             >
               Cancel
             </Button>
-            <Button
-              type="submit"
-              disabled={submitting || !selectedSlot || !customerName || !customerPhone}
-            >
+            <Button type="submit" disabled={submitting || !selectedSlot}>
               {submitting ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
-                  Reserving...
-                </>
+                <span className="flex items-center gap-1.5">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {isReschedule ? "Rescheduling..." : "Booking..."}
+                </span>
+              ) : isReschedule ? (
+                "Confirm Reschedule"
               ) : (
-                "Confirm Booking"
+                "Create Appointment"
               )}
             </Button>
           </DialogFooter>

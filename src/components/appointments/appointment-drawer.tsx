@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { format } from "date-fns";
 import { toast } from "sonner";
@@ -20,6 +20,9 @@ import {
   DollarSign,
   FileText,
   Trash2,
+  Pencil,
+  ArrowRight,
+  ExternalLink,
 } from "lucide-react";
 import {
   Sheet,
@@ -27,7 +30,6 @@ import {
   SheetHeader,
   SheetTitle,
   SheetDescription,
-  SheetFooter,
 } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -50,6 +52,7 @@ interface AppointmentDrawerProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onUpdated: () => void;
+  onRescheduleClick?: (appointment: Appointment) => void;
 }
 
 const STATUS_VARIANTS: Record<
@@ -87,12 +90,25 @@ export function AppointmentDrawer({
   open,
   onOpenChange,
   onUpdated,
+  onRescheduleClick,
 }: AppointmentDrawerProps) {
   const router = useRouter();
   const [copied, setCopied] = useState(false);
   const [cancelModalOpen, setCancelModalOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editPhone, setEditPhone] = useState("");
+  const [editNotes, setEditNotes] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
+
+  useEffect(() => {
+    if (appointment) {
+      setEditName(appointment.customer_name);
+      setEditPhone(appointment.customer_phone);
+      setEditNotes(appointment.notes || "");
+    }
+  }, [appointment]);
 
   if (!appointment) return null;
 
@@ -115,11 +131,42 @@ export function AppointmentDrawer({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status }),
       });
-      if (!res.ok) throw new Error("Failed to update status");
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Failed to update status");
+      }
       toast.success(`Appointment marked as ${status}`);
       onUpdated();
-    } catch {
-      toast.error("Failed to update appointment");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to update appointment";
+      toast.error(msg);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleSaveEdit = async () => {
+    setActionLoading(true);
+    try {
+      const res = await fetch(`/api/appointments/${appointment.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customer_name: editName.trim(),
+          customer_phone: editPhone.trim(),
+          notes: editNotes.trim() || null,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Failed to save changes");
+      }
+      toast.success("Appointment details updated");
+      setEditModalOpen(false);
+      onUpdated();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Error saving changes";
+      toast.error(msg);
     } finally {
       setActionLoading(false);
     }
@@ -133,12 +180,16 @@ export function AppointmentDrawer({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reason: cancelReason }),
       });
-      if (!res.ok) throw new Error("Failed to cancel");
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Failed to cancel");
+      }
       toast.success("Appointment cancelled");
       setCancelModalOpen(false);
       onUpdated();
-    } catch {
-      toast.error("Failed to cancel appointment");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to cancel appointment";
+      toast.error(msg);
     } finally {
       setActionLoading(false);
     }
@@ -153,6 +204,18 @@ export function AppointmentDrawer({
     }
   };
 
+  const openContact = () => {
+    onOpenChange(false);
+    if (appointment.contact_id) {
+      router.push(`/contacts?contactId=${appointment.contact_id}`);
+    } else {
+      router.push(`/contacts`);
+    }
+  };
+
+  const isActionable =
+    appointment.status === "confirmed" || appointment.status === "pending";
+
   const statusMeta = STATUS_VARIANTS[appointment.status] || STATUS_VARIANTS.confirmed;
 
   return (
@@ -164,9 +227,20 @@ export function AppointmentDrawer({
               <Badge variant="outline" className={statusMeta.className}>
                 {statusMeta.label}
               </Badge>
-              <span className="text-xs text-muted-foreground capitalize">
-                Source: {appointment.source.replace("_", " ")}
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground capitalize">
+                  Source: {appointment.source.replace("_", " ")}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                  title="Edit details"
+                  onClick={() => setEditModalOpen(true)}
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </Button>
+              </div>
             </div>
             <SheetTitle className="text-xl font-bold mt-2">
               {appointment.service?.name || "Appointment"}
@@ -177,6 +251,18 @@ export function AppointmentDrawer({
           </SheetHeader>
 
           <div className="py-4 space-y-6">
+            {/* Reschedule Link Banner */}
+            {appointment.rescheduled_from_id && (
+              <div className="rounded-md border border-slate-500/30 bg-slate-500/10 p-2.5 text-xs text-slate-700 dark:text-slate-300 flex items-center justify-between">
+                <span>Rescheduled from earlier appointment</span>
+              </div>
+            )}
+            {appointment.rescheduled_to_id && (
+              <div className="rounded-md border border-slate-500/30 bg-slate-500/10 p-2.5 text-xs text-slate-700 dark:text-slate-300 flex items-center justify-between">
+                <span>Superseded by new rescheduled appointment</span>
+              </div>
+            )}
+
             {/* Customer Information */}
             <div className="rounded-lg border bg-card p-4 space-y-3">
               <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -209,16 +295,39 @@ export function AppointmentDrawer({
                 </div>
               </div>
 
-              {/* Open Conversation Button - Critical CRM link */}
-              <Button
-                variant="outline"
-                size="sm"
-                className="w-full mt-2 gap-2 text-primary border-primary/20 hover:bg-primary/5"
-                onClick={openConversation}
-              >
-                <MessageSquare className="h-4 w-4" />
-                Open WhatsApp Conversation
-              </Button>
+              {/* Action buttons: Open Conversation + View Contact */}
+              <div className="grid grid-cols-2 gap-2 mt-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5 text-primary border-primary/20 hover:bg-primary/5 text-xs"
+                  onClick={openConversation}
+                >
+                  <MessageSquare className="h-3.5 w-3.5" />
+                  Conversation
+                </Button>
+                {appointment.contact_id ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 text-muted-foreground hover:text-foreground text-xs"
+                    onClick={openContact}
+                  >
+                    <User className="h-3.5 w-3.5" />
+                    Contact Profile
+                  </Button>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 text-muted-foreground text-xs"
+                    disabled
+                  >
+                    <User className="h-3.5 w-3.5" />
+                    No CRM Contact
+                  </Button>
+                )}
+              </div>
             </div>
 
             {/* Appointment Schedule & Provider */}
@@ -275,16 +384,46 @@ export function AppointmentDrawer({
                   </p>
                 </div>
               )}
-              {appointment.cancellation_reason && (
+              {appointment.status === "rescheduled" && (
+                <div className="pt-2 border-t mt-2 text-slate-600 dark:text-slate-400">
+                  <span className="text-xs font-semibold block mb-0.5">Rescheduled:</span>
+                  <p className="text-xs">
+                    {appointment.rescheduled_at
+                      ? `On ${format(new Date(appointment.rescheduled_at), "d MMM yyyy, h:mm a")}`
+                      : ""}
+                    {appointment.reschedule_reason ? ` • ${appointment.reschedule_reason}` : ""}
+                  </p>
+                </div>
+              )}
+              {appointment.status === "cancelled" && appointment.cancellation_reason && (
                 <div className="pt-2 border-t mt-2 text-red-600 dark:text-red-400">
                   <span className="text-xs font-semibold block mb-0.5">Cancellation Reason:</span>
                   <p className="text-sm">{appointment.cancellation_reason}</p>
                 </div>
               )}
+
+              {/* External Calendar Sync Status */}
+              {appointment.calendar_links && appointment.calendar_links.length > 0 && (
+                <div className="pt-2 border-t mt-2">
+                  <span className="text-xs text-muted-foreground block mb-1">Calendar Sync:</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {appointment.calendar_links.map((link) => (
+                      <Badge
+                        key={link.id}
+                        variant="secondary"
+                        className="text-[10px] px-2 py-0.5 capitalize flex items-center gap-1"
+                      >
+                        <span className="font-semibold">{link.provider}:</span>
+                        <span>{link.sync_status}</span>
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Lifecycle Action Buttons */}
-            {appointment.status !== "cancelled" && appointment.status !== "completed" && (
+            {isActionable && (
               <div className="space-y-2 pt-2">
                 <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                   Update Outcome
@@ -312,16 +451,29 @@ export function AppointmentDrawer({
                   </Button>
                 </div>
 
-                <div className="flex items-center gap-2 pt-2">
+                <div className="grid grid-cols-2 gap-2 pt-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5"
+                    disabled={actionLoading}
+                    onClick={() => {
+                      onOpenChange(false);
+                      onRescheduleClick?.(appointment);
+                    }}
+                  >
+                    <RefreshCw className="h-3.5 w-3.5 text-primary" />
+                    Reschedule
+                  </Button>
                   <Button
                     variant="destructive"
                     size="sm"
-                    className="w-full gap-1.5"
+                    className="gap-1.5"
                     disabled={actionLoading}
                     onClick={() => setCancelModalOpen(true)}
                   >
-                    <XCircle className="h-4 w-4" />
-                    Cancel Appointment
+                    <XCircle className="h-3.5 w-3.5" />
+                    Cancel
                   </Button>
                 </div>
               </div>
@@ -362,6 +514,60 @@ export function AppointmentDrawer({
               disabled={actionLoading}
             >
               {actionLoading ? "Cancelling..." : "Confirm Cancellation"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Details Dialog */}
+      <Dialog open={editModalOpen} onOpenChange={setEditModalOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Appointment Details</DialogTitle>
+            <DialogDescription>
+              Update patient contact details and internal notes.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-name">Customer Name</Label>
+              <Input
+                id="edit-name"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                required
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-phone">Customer Phone</Label>
+              <Input
+                id="edit-phone"
+                value={editPhone}
+                onChange={(e) => setEditPhone(e.target.value)}
+                required
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-notes">Internal Notes</Label>
+              <Textarea
+                id="edit-notes"
+                placeholder="Add special instructions or customer preferences..."
+                rows={3}
+                value={editNotes}
+                onChange={(e) => setEditNotes(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setEditModalOpen(false)}
+              disabled={actionLoading}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleSaveEdit} disabled={actionLoading}>
+              {actionLoading ? "Saving..." : "Save Changes"}
             </Button>
           </DialogFooter>
         </DialogContent>

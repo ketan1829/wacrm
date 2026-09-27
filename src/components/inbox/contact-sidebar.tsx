@@ -24,6 +24,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { format } from "date-fns";
 import { useTranslations } from "next-intl";
 import { contactHandle } from "@/lib/whatsapp/wa-identity";
+import { AppointmentDrawer } from "@/components/appointments/appointment-drawer";
+import { AppointmentBookingModal } from "@/components/appointments/appointment-booking-modal";
 
 interface ContactSidebarProps {
   contact: Contact | null;
@@ -41,6 +43,15 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
   const [upcomingAppointment, setUpcomingAppointment] = useState<Appointment | null>(null);
   const [newNote, setNewNote] = useState("");
   const [addingNote, setAddingNote] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [bookingModalOpen, setBookingModalOpen] = useState(false);
+  const [rescheduleAppointment, setRescheduleAppointment] = useState<Appointment | null>(null);
+
+  const handleOpenReschedule = (app: Appointment) => {
+    setDrawerOpen(false);
+    setRescheduleAppointment(app);
+    setBookingModalOpen(true);
+  };
 
   const fetchContactData = useCallback(async () => {
     if (!contact) return;
@@ -205,7 +216,10 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
           {/* Upcoming Appointment */}
           <div className="mt-3">
             {upcomingAppointment ? (
-              <div className="rounded-lg border border-primary/30 bg-primary/5 p-3 space-y-1.5 shadow-2xs">
+              <div
+                onClick={() => setDrawerOpen(true)}
+                className="cursor-pointer rounded-lg border border-primary/30 bg-primary/5 p-3 space-y-1.5 shadow-2xs hover:border-primary/60 transition-colors"
+              >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5 text-xs font-semibold text-primary">
                     <Calendar className="h-3.5 w-3.5" />
@@ -232,12 +246,18 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
                     </>
                   )}
                 </div>
-                <Link
-                  href="/appointments"
-                  className="text-[11px] text-primary hover:underline block pt-1 font-medium"
-                >
-                  View in Calendar →
-                </Link>
+                <div className="flex items-center justify-between pt-1">
+                  <span className="text-[11px] text-primary hover:underline font-medium">
+                    Open details →
+                  </span>
+                  <Link
+                    href="/appointments"
+                    onClick={(e) => e.stopPropagation()}
+                    className="text-[10px] text-muted-foreground hover:text-foreground hover:underline"
+                  >
+                    Calendar ↗
+                  </Link>
+                </div>
               </div>
             ) : (
               <div className="flex items-center justify-between rounded-lg border border-dashed p-2 px-3 text-xs text-muted-foreground">
@@ -245,12 +265,16 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
                   <Calendar className="h-3.5 w-3.5 opacity-60" />
                   No upcoming booking
                 </span>
-                <Link
-                  href="/appointments"
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRescheduleAppointment(null);
+                    setBookingModalOpen(true);
+                  }}
                   className="text-xs font-medium text-primary hover:underline"
                 >
                   + Book
-                </Link>
+                </button>
               </div>
             )}
           </div>
@@ -375,6 +399,31 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
           </div>
         </div>
       </ScrollArea>
+
+      {/* Appointment Drawer */}
+      <AppointmentDrawer
+        appointment={upcomingAppointment}
+        open={drawerOpen}
+        onOpenChange={setDrawerOpen}
+        onUpdated={fetchContactData}
+        onRescheduleClick={handleOpenReschedule}
+      />
+
+      {/* Booking / Reschedule Modal */}
+      <AppointmentBookingModal
+        open={bookingModalOpen}
+        onOpenChange={(open) => {
+          setBookingModalOpen(open);
+          if (!open) {
+            setRescheduleAppointment(null);
+          }
+        }}
+        onBooked={fetchContactData}
+        preselectedContactId={contact?.id}
+        preselectedContactName={contact?.name || ""}
+        preselectedContactPhone={contact?.phone || ""}
+        rescheduleAppointment={rescheduleAppointment}
+      />
     </div>
   );
 }

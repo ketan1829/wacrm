@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 import { getCurrentAccount, requireRole, toErrorResponse } from "@/lib/auth/account";
+import { canTransitionStatus } from "@/lib/appointments/status";
+import type { AppointmentStatus } from "@/lib/appointments/types";
 
 /**
  * GET /api/appointments/[id] — get appointment details with relations.
- * PATCH /api/appointments/[id] — update appointment (status, notes).
+ * PATCH /api/appointments/[id] — update appointment (status, notes, customer details).
  * DELETE /api/appointments/[id] — delete appointment (admin only).
  */
 
@@ -17,7 +19,7 @@ export async function GET(
 
     const { data: appointment, error } = await ctx.supabase
       .from("appointments")
-      .select("*, service:appointment_services(*), staff:appointment_staff(*), contact:contacts(*)")
+      .select("*, service:appointment_services(*), staff:appointment_staff(*), contact:contacts(*), calendar_links:appointment_calendar_links(*)")
       .eq("id", id)
       .eq("account_id", ctx.accountId)
       .maybeSingle();
@@ -57,12 +59,36 @@ export async function PATCH(
       return NextResponse.json({ error: "No fields to update" }, { status: 400 });
     }
 
+    // If status is being changed, validate transition rule
+    if (updates.status) {
+      const { data: currentApp } = await ctx.supabase
+        .from("appointments")
+        .select("status")
+        .eq("id", id)
+        .eq("account_id", ctx.accountId)
+        .single();
+
+      if (!currentApp) {
+        return NextResponse.json({ error: "Appointment not found" }, { status: 404 });
+      }
+
+      if (!canTransitionStatus(currentApp.status as AppointmentStatus, updates.status as AppointmentStatus)) {
+        return NextResponse.json(
+          {
+            error: `Invalid status transition from ${currentApp.status} to ${updates.status}`,
+            code: "INVALID_STATUS_TRANSITION",
+          },
+          { status: 400 },
+        );
+      }
+    }
+
     const { data: updated, error } = await ctx.supabase
       .from("appointments")
       .update(updates)
       .eq("id", id)
       .eq("account_id", ctx.accountId)
-      .select("*, service:appointment_services(*), staff:appointment_staff(*), contact:contacts(*)")
+      .select("*, service:appointment_services(*), staff:appointment_staff(*), contact:contacts(*), calendar_links:appointment_calendar_links(*)")
       .single();
 
     if (error) {

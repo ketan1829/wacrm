@@ -13,12 +13,10 @@ const h = vi.hoisted(() => ({
 
 vi.mock("./admin-client", () => {
   function queryBuilder(table: string) {
-    let selectedCols = "*";
     const filters: Array<{ col: string; op: string; val: unknown }> = [];
 
     const builder: Record<string, unknown> = {
-      select: vi.fn((cols: string) => {
-        selectedCols = cols;
+      select: vi.fn(() => {
         return builder;
       }),
       eq: vi.fn((col: string, val: unknown) => {
@@ -34,12 +32,30 @@ vi.mock("./admin-client", () => {
         return builder;
       }),
       update: vi.fn((values: Record<string, unknown>) => {
-        return {
-          eq: vi.fn((col: string, idVal: string) => {
-            h.state.updates.push({ table, id: idVal, values });
-            return Promise.resolve({ data: null, error: null });
+        const updateBuilder: Record<string, unknown> = {
+          eq: vi.fn((col: string, val: unknown) => {
+            filters.push({ col, op: "eq", val });
+            if (col === "id" && typeof val === "string") {
+              h.state.updates.push({ table, id: val, values });
+            }
+            return updateBuilder;
+          }),
+          select: vi.fn(() => updateBuilder),
+          maybeSingle: vi.fn(async () => {
+            let matched = [...h.state.appointments];
+            for (const f of filters) {
+              if (f.op === "eq") {
+                matched = matched.filter((row) => row[f.col] === f.val);
+              }
+            }
+            if (matched.length > 0) {
+              Object.assign(matched[0], values);
+              return { data: { id: matched[0].id }, error: null };
+            }
+            return { data: null, error: null };
           }),
         };
+        return updateBuilder;
       }),
       maybeSingle: vi.fn(async () => {
         if (table === "whatsapp_config") {

@@ -924,7 +924,7 @@ async function executeBookAppointmentStep(
   // ------------------------------------------------------------
   // Step 4: Finalize Booking & Create Appointment
   // ------------------------------------------------------------
-  let slotStaffId =
+  const slotStaffId =
     (run.vars.booking_slot_staff_id as string | undefined) ||
     cfg.staff_id ||
     (run.vars.booking_staff_id as string | undefined);
@@ -943,18 +943,6 @@ async function executeBookAppointmentStep(
     }
   }
 
-  if (!slotStaffId) {
-    const { data: staffList } = await db
-      .from("appointment_staff")
-      .select("id")
-      .eq("account_id", run.account_id)
-      .eq("is_active", true)
-      .limit(1);
-    if (staffList && staffList.length > 0) {
-      slotStaffId = staffList[0].id;
-    }
-  }
-
   // Calculate end time based on service duration
   const { data: svcRow } = await db
     .from("appointment_services")
@@ -970,7 +958,7 @@ async function executeBookAppointmentStep(
   const bookingResult = await createAppointment({
     accountId: run.account_id,
     serviceId,
-    staffId: slotStaffId || "",
+    staffId: slotStaffId || undefined,
     startAt: slotStartDate.toISOString(),
     endAt: slotEndDate.toISOString(),
     customerName,

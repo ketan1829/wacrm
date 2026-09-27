@@ -8,6 +8,7 @@ import { formatCurrency } from '@/lib/currency';
 import { toast } from 'sonner';
 import type { Contact, Tag, ContactTag, ContactNote, CustomField, ContactCustomValue, Deal, MessageTemplate, Appointment } from '@/types';
 import { AppointmentBookingModal } from '@/components/appointments/appointment-booking-modal';
+import { AppointmentDrawer } from '@/components/appointments/appointment-drawer';
 import {
   TemplatePicker,
   type TemplateSendValues,
@@ -106,6 +107,15 @@ export function ContactDetailView({
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [loadingAppointments, setLoadingAppointments] = useState(false);
   const [bookingModalOpen, setBookingModalOpen] = useState(false);
+  const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [rescheduleAppointment, setRescheduleAppointment] = useState<Appointment | null>(null);
+
+  const handleOpenReschedule = (app: Appointment) => {
+    setDrawerOpen(false);
+    setRescheduleAppointment(app);
+    setBookingModalOpen(true);
+  };
 
   const fetchContact = useCallback(async () => {
     if (!contactId) return;
@@ -788,12 +798,15 @@ export function ContactDetailView({
               <TabsContent value="appointments" className="flex-1 overflow-y-auto px-4 py-3">
                 <div className="flex items-center justify-between mb-3">
                   <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    Appointments History
+                    Appointments ({appointments.length})
                   </h4>
                   <Button
                     size="sm"
                     className="h-7 text-xs gap-1"
-                    onClick={() => setBookingModalOpen(true)}
+                    onClick={() => {
+                      setRescheduleAppointment(null);
+                      setBookingModalOpen(true);
+                    }}
                   >
                     <Plus className="size-3" />
                     Book appointment
@@ -816,60 +829,145 @@ export function ContactDetailView({
                       size="sm"
                       variant="outline"
                       className="mt-3 text-xs gap-1"
-                      onClick={() => setBookingModalOpen(true)}
+                      onClick={() => {
+                        setRescheduleAppointment(null);
+                        setBookingModalOpen(true);
+                      }}
                     >
                       <Plus className="size-3" />
                       Book first appointment
                     </Button>
                   </div>
                 ) : (
-                  <div className="space-y-2">
-                    {appointments.map((app) => (
-                      <div
-                        key={app.id}
-                        className="rounded-lg border border-border bg-card p-3 space-y-1.5 hover:border-primary/40 transition-colors"
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="font-medium text-sm text-foreground">
-                            {app.service?.name || "Appointment"}
-                          </span>
-                          <Badge
-                            variant="outline"
-                            className="text-[10px] px-1.5 py-0 capitalize"
-                          >
-                            {app.status}
-                          </Badge>
-                        </div>
-                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                          <span className="flex items-center gap-1">
-                            <Clock className="size-3" />
-                            {new Date(app.start_at).toLocaleDateString(undefined, {
-                              day: "numeric",
-                              month: "short",
-                              year: "numeric",
-                            })}{" "}
-                            at{" "}
-                            {new Date(app.start_at).toLocaleTimeString(undefined, {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })}
-                          </span>
-                          {app.staff?.name && (
-                            <>
-                              <span>•</span>
-                              <span className="font-medium text-foreground">
-                                {app.staff.name}
-                              </span>
-                            </>
-                          )}
-                        </div>
-                        {app.notes && (
-                          <p className="text-xs text-muted-foreground bg-muted/40 p-1.5 rounded mt-1">
-                            {app.notes}
-                          </p>
-                        )}
+                  <div className="space-y-4">
+                    {/* Upcoming Appointments */}
+                    <div>
+                      <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+                        Upcoming ({appointments.filter((a) => new Date(a.end_at) >= new Date() && (a.status === 'pending' || a.status === 'confirmed')).length})
                       </div>
-                    ))}
+                      {appointments.filter((a) => new Date(a.end_at) >= new Date() && (a.status === 'pending' || a.status === 'confirmed')).length === 0 ? (
+                        <p className="text-xs text-muted-foreground italic py-1">No upcoming appointments scheduled.</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {appointments
+                            .filter((a) => new Date(a.end_at) >= new Date() && (a.status === 'pending' || a.status === 'confirmed'))
+                            .map((app) => (
+                              <div
+                                key={app.id}
+                                onClick={() => {
+                                  setSelectedAppointment(app);
+                                  setDrawerOpen(true);
+                                }}
+                                className="cursor-pointer rounded-lg border border-primary/30 bg-primary/5 p-3 space-y-1.5 hover:border-primary/60 transition-colors shadow-2xs"
+                              >
+                                <div className="flex items-center justify-between">
+                                  <span className="font-medium text-sm text-foreground">
+                                    {app.service?.name || "Appointment"}
+                                  </span>
+                                  <Badge
+                                    variant="outline"
+                                    className="text-[10px] px-1.5 py-0 capitalize border-primary/30 text-primary"
+                                  >
+                                    {app.status}
+                                  </Badge>
+                                </div>
+                                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                  <span className="flex items-center gap-1 font-medium text-foreground">
+                                    <Clock className="size-3 text-primary" />
+                                    {new Date(app.start_at).toLocaleDateString(undefined, {
+                                      day: "numeric",
+                                      month: "short",
+                                      year: "numeric",
+                                    })}{" "}
+                                    at{" "}
+                                    {new Date(app.start_at).toLocaleTimeString(undefined, {
+                                      hour: "2-digit",
+                                      minute: "2-digit",
+                                    })}
+                                  </span>
+                                  {app.staff?.name && (
+                                    <>
+                                      <span>•</span>
+                                      <span className="font-medium text-foreground">
+                                        {app.staff.name}
+                                      </span>
+                                    </>
+                                  )}
+                                </div>
+                                {app.notes && (
+                                  <p className="text-xs text-muted-foreground bg-background/60 p-1.5 rounded mt-1 line-clamp-2">
+                                    {app.notes}
+                                  </p>
+                                )}
+                                <div className="pt-1 flex items-center justify-end text-[11px] text-primary font-medium">
+                                  <span>View details & actions →</span>
+                                </div>
+                              </div>
+                            ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Past & Cancelled Appointments */}
+                    {appointments.filter((a) => !(new Date(a.end_at) >= new Date() && (a.status === 'pending' || a.status === 'confirmed'))).length > 0 && (
+                      <div>
+                        <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+                          Past & Cancelled ({appointments.filter((a) => !(new Date(a.end_at) >= new Date() && (a.status === 'pending' || a.status === 'confirmed'))).length})
+                        </div>
+                        <div className="space-y-2">
+                          {appointments
+                            .filter((a) => !(new Date(a.end_at) >= new Date() && (a.status === 'pending' || a.status === 'confirmed')))
+                            .map((app) => (
+                              <div
+                                key={app.id}
+                                onClick={() => {
+                                  setSelectedAppointment(app);
+                                  setDrawerOpen(true);
+                                }}
+                                className="cursor-pointer rounded-lg border border-border bg-card p-3 space-y-1.5 hover:border-muted-foreground/40 transition-colors opacity-80 hover:opacity-100"
+                              >
+                                <div className="flex items-center justify-between">
+                                  <span className="font-medium text-sm text-foreground">
+                                    {app.service?.name || "Appointment"}
+                                  </span>
+                                  <Badge
+                                    variant="outline"
+                                    className="text-[10px] px-1.5 py-0 capitalize"
+                                  >
+                                    {app.status}
+                                  </Badge>
+                                </div>
+                                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                  <span className="flex items-center gap-1">
+                                    <Clock className="size-3" />
+                                    {new Date(app.start_at).toLocaleDateString(undefined, {
+                                      day: "numeric",
+                                      month: "short",
+                                      year: "numeric",
+                                    })}{" "}
+                                    at{" "}
+                                    {new Date(app.start_at).toLocaleTimeString(undefined, {
+                                      hour: "2-digit",
+                                      minute: "2-digit",
+                                    })}
+                                  </span>
+                                  {app.staff?.name && (
+                                    <>
+                                      <span>•</span>
+                                      <span>{app.staff.name}</span>
+                                    </>
+                                  )}
+                                </div>
+                                {app.notes && (
+                                  <p className="text-xs text-muted-foreground bg-muted/40 p-1.5 rounded mt-1 line-clamp-2">
+                                    {app.notes}
+                                  </p>
+                                )}
+                              </div>
+                            ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </TabsContent>
@@ -886,13 +984,24 @@ export function ContactDetailView({
     {contact && (
       <AppointmentBookingModal
         open={bookingModalOpen}
-        onOpenChange={setBookingModalOpen}
+        onOpenChange={(open) => {
+          setBookingModalOpen(open);
+          if (!open) setRescheduleAppointment(null);
+        }}
         onBooked={fetchAppointments}
         preselectedContactId={contact.id}
         preselectedContactName={contact.name}
         preselectedContactPhone={contact.phone}
+        rescheduleAppointment={rescheduleAppointment}
       />
     )}
+    <AppointmentDrawer
+      appointment={selectedAppointment}
+      open={drawerOpen}
+      onOpenChange={setDrawerOpen}
+      onUpdated={fetchAppointments}
+      onRescheduleClick={handleOpenReschedule}
+    />
     </>
   );
 }

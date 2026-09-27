@@ -1,6 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "./admin-client";
 import { hasStaffConflict } from "./conflicts";
+import {
+  canTransitionStatus,
+  getActionableErrorMessage,
+  type AppointmentErrorCode,
+} from "./status";
 import { runAutomationsForTrigger } from "@/lib/automations/engine";
 import { findExistingContact } from "@/lib/contacts/dedupe";
 import type {
@@ -9,24 +14,13 @@ import type {
   RescheduleAppointmentInput,
   CancelAppointmentInput,
   AppointmentStatus,
+  BookingResult,
 } from "./types";
-
-export interface BookingResult {
-  ok: boolean;
-  appointment?: Appointment;
-  error?: string;
-  code?:
-    | "SLOT_ALREADY_BOOKED"
-    | "SERVICE_NOT_FOUND"
-    | "STAFF_NOT_FOUND"
-    | "INVALID_TIME_RANGE"
-    | "DATABASE_ERROR"
-    | "NOT_FOUND";
-}
 
 /**
  * Creates an appointment using atomic RPC locking or transactional conflict validation.
  * Guaranteed double-booking protection.
+ * Supports explicit staff or atomic "Any Provider" assignment when staffId is null/omitted.
  */
 export async function createAppointment(
   input: CreateAppointmentInput,
@@ -38,7 +32,11 @@ export async function createAppointment(
   const end = new Date(input.endAt);
 
   if (isNaN(start.getTime()) || isNaN(end.getTime()) || end <= start) {
-    return { ok: false, error: "Invalid appointment start and end times", code: "INVALID_TIME_RANGE" };
+    return {
+      ok: false,
+      code: "INVALID_TIME_RANGE",
+      error: getActionableErrorMessage("INVALID_TIME_RANGE"),
+    };
   }
 
   // 1. Resolve or find contact if phone provided
@@ -70,12 +68,15 @@ export async function createAppointment(
     }
   }
 
+  const effectiveStaffId =
+    input.staffId && input.staffId !== "any" ? input.staffId : null;
+
   // 2. Try atomic RPC first (book_appointment_atomic)
   try {
     const { data: rpcResult, error: rpcError } = await db.rpc("book_appointment_atomic", {
       p_account_id: input.accountId,
       p_service_id: input.serviceId,
-      p_staff_id: input.staffId,
+      p_staff_id: effectiveStaffId,
       p_start_at: start.toISOString(),
       p_end_at: end.toISOString(),
       p_customer_name: input.customerName,
@@ -91,19 +92,26 @@ export async function createAppointment(
 
     if (!rpcError && rpcResult) {
       if (!rpcResult.ok) {
-        if (rpcResult.error === "SLOT_ALREADY_BOOKED") {
-          return { ok: false, error: "This time slot has already been reserved", code: "SLOT_ALREADY_BOOKED" };
-        }
-        if (rpcResult.error === "SERVICE_NOT_FOUND_OR_INACTIVE") {
-          return { ok: false, error: "Service not found or inactive", code: "SERVICE_NOT_FOUND" };
-        }
-        if (rpcResult.error === "STAFF_NOT_FOUND_OR_INACTIVE") {
-          return { ok: false, error: "Staff provider not found or inactive", code: "STAFF_NOT_FOUND" };
-        }
-        return { ok: false, error: rpcResult.error || "Booking failed", code: "DATABASE_ERROR" };
+        const code = (rpcResult.error as AppointmentErrorCode) || "DATABASE_ERROR";
+        return {
+          ok: false,
+          code,
+          error: getActionableErrorMessage(code, rpcResult.error),
+        };
       }
 
-      const createdAppointment = rpcResult.appointment as Appointment;
+      let createdAppointment = rpcResult.appointment as Appointment;
+
+      if (!createdAppointment.service || !createdAppointment.staff) {
+        const { data: fullApp } = await db
+          .from("appointments")
+          .select("*, service:appointment_services(*), staff:appointment_staff(*)")
+          .eq("id", createdAppointment.id)
+          .maybeSingle();
+        if (fullApp) {
+          createdAppointment = fullApp as Appointment;
+        }
+      }
 
       // Fire appointment_created automation in background
       dispatchAppointmentAutomation({
@@ -116,20 +124,69 @@ export async function createAppointment(
       return { ok: true, appointment: createdAppointment };
     }
   } catch (rpcErr) {
-    console.warn("[createAppointment] RPC failed, falling back to direct insert:", rpcErr);
+    console.warn("[createAppointment] RPC failed, falling back to direct check/insert:", rpcErr);
   }
 
-  // Fallback direct check + insert
+  // 3. Fallback direct verification + insert
+  let assignedStaffId = effectiveStaffId;
+
+  if (!assignedStaffId) {
+    // Pick first eligible active staff with no conflict
+    const { data: mappedStaff } = await db
+      .from("appointment_staff_services")
+      .select("staff_id")
+      .eq("service_id", input.serviceId);
+
+    const mappedIds = (mappedStaff || []).map((m: { staff_id: string }) => m.staff_id);
+
+    let staffQuery = db
+      .from("appointment_staff")
+      .select("id")
+      .eq("account_id", input.accountId)
+      .eq("is_active", true);
+
+    if (mappedIds.length > 0) {
+      staffQuery = staffQuery.in("id", mappedIds);
+    }
+
+    const { data: staffCandidates } = await staffQuery;
+    for (const cand of staffCandidates || []) {
+      const conflict = await hasStaffConflict({
+        accountId: input.accountId,
+        staffId: cand.id,
+        startAt: start,
+        endAt: end,
+        client: db,
+      });
+      if (!conflict) {
+        assignedStaffId = cand.id;
+        break;
+      }
+    }
+  }
+
+  if (!assignedStaffId) {
+    return {
+      ok: false,
+      code: "SLOT_ALREADY_BOOKED",
+      error: getActionableErrorMessage("SLOT_ALREADY_BOOKED"),
+    };
+  }
+
   const conflict = await hasStaffConflict({
     accountId: input.accountId,
-    staffId: input.staffId,
+    staffId: assignedStaffId,
     startAt: start,
     endAt: end,
     client: db,
   });
 
   if (conflict) {
-    return { ok: false, error: "This time slot has already been reserved", code: "SLOT_ALREADY_BOOKED" };
+    return {
+      ok: false,
+      code: "SLOT_ALREADY_BOOKED",
+      error: getActionableErrorMessage("SLOT_ALREADY_BOOKED"),
+    };
   }
 
   const { data: newRow, error: insertError } = await db
@@ -139,7 +196,7 @@ export async function createAppointment(
       contact_id: contactId,
       conversation_id: input.conversationId ?? null,
       service_id: input.serviceId,
-      staff_id: input.staffId,
+      staff_id: assignedStaffId,
       start_at: start.toISOString(),
       end_at: end.toISOString(),
       timezone: input.timezone || "Asia/Kolkata",
@@ -154,14 +211,23 @@ export async function createAppointment(
     .single();
 
   if (insertError) {
-    // If exclusion constraint caught a race condition
-    if (insertError.code === "23P01" || insertError.message.includes("no_overlapping_staff_appointments")) {
-      return { ok: false, error: "This time slot has already been reserved", code: "SLOT_ALREADY_BOOKED" };
+    if (
+      insertError.code === "23P01" ||
+      insertError.message.includes("no_overlapping_staff_appointments")
+    ) {
+      return {
+        ok: false,
+        code: "SLOT_ALREADY_BOOKED",
+        error: getActionableErrorMessage("SLOT_ALREADY_BOOKED"),
+      };
     }
-    return { ok: false, error: insertError.message, code: "DATABASE_ERROR" };
+    return {
+      ok: false,
+      code: "DATABASE_ERROR",
+      error: insertError.message,
+    };
   }
 
-  // Fire appointment_created automation
   dispatchAppointmentAutomation({
     accountId: input.accountId,
     triggerType: "appointment_created",
@@ -173,16 +239,21 @@ export async function createAppointment(
 }
 
 /**
- * Reschedules an appointment by marking the old one as 'rescheduled'
- * and creating a new linked appointment row. Preserves full history.
+ * Reschedules an appointment atomically:
+ *   - Verifies old appointment is reschedulable (pending or confirmed)
+ *   - Verifies target slot availability
+ *   - Inserts new appointment row linked to old appointment
+ *   - Marks old appointment as 'rescheduled' with rescheduled_at and reschedule_reason
+ *   - Preserves cancellation fields strictly for actual cancellations
  */
 export async function rescheduleAppointment(
   input: RescheduleAppointmentInput,
   client?: SupabaseClient,
 ): Promise<BookingResult> {
   const db = client ?? supabaseAdmin();
+  const rescheduleReason = input.rescheduleReason || input.reason || "Rescheduled";
 
-  // 1. Fetch old appointment
+  // 1. Fetch old appointment to validate status transition
   const { data: oldApp, error: fetchErr } = await db
     .from("appointments")
     .select("*")
@@ -191,25 +262,88 @@ export async function rescheduleAppointment(
     .single();
 
   if (fetchErr || !oldApp) {
-    return { ok: false, error: "Appointment not found", code: "NOT_FOUND" };
-  }
-
-  if (oldApp.status === "cancelled" || oldApp.status === "completed") {
     return {
       ok: false,
-      error: `Cannot reschedule an appointment that is already ${oldApp.status}`,
-      code: "DATABASE_ERROR",
+      code: "NOT_FOUND",
+      error: getActionableErrorMessage("NOT_FOUND"),
     };
   }
 
-  const staffId = input.staffId || oldApp.staff_id;
+  if (!canTransitionStatus(oldApp.status as AppointmentStatus, "rescheduled")) {
+    return {
+      ok: false,
+      code: "APPOINTMENT_NOT_RESCHEDULABLE",
+      error: `Cannot reschedule an appointment that is currently ${oldApp.status}`,
+    };
+  }
+
   const newStart = new Date(input.newStartAt);
   const newEnd = new Date(input.newEndAt);
 
-  // 2. Check conflict for new time slot (excluding old appointment)
+  if (isNaN(newStart.getTime()) || isNaN(newEnd.getTime()) || newEnd <= newStart) {
+    return {
+      ok: false,
+      code: "INVALID_TIME_RANGE",
+      error: getActionableErrorMessage("INVALID_TIME_RANGE"),
+    };
+  }
+
+  const targetStaffId = input.staffId || oldApp.staff_id;
+
+  // 2. Attempt atomic RPC reschedule
+  try {
+    const { data: rpcResult, error: rpcError } = await db.rpc(
+      "reschedule_appointment_atomic",
+      {
+        p_account_id: input.accountId,
+        p_appointment_id: input.appointmentId,
+        p_new_start_at: newStart.toISOString(),
+        p_new_end_at: newEnd.toISOString(),
+        p_staff_id: targetStaffId,
+        p_reschedule_reason: rescheduleReason,
+      },
+    );
+
+    if (!rpcError && rpcResult) {
+      if (!rpcResult.ok) {
+        const code = (rpcResult.error as AppointmentErrorCode) || "DATABASE_ERROR";
+        return {
+          ok: false,
+          code,
+          error: getActionableErrorMessage(code, rpcResult.error),
+        };
+      }
+
+      let newApp = rpcResult.appointment as Appointment;
+
+      if (!newApp.service || !newApp.staff) {
+        const { data: fullApp } = await db
+          .from("appointments")
+          .select("*, service:appointment_services(*), staff:appointment_staff(*)")
+          .eq("id", newApp.id)
+          .maybeSingle();
+        if (fullApp) {
+          newApp = fullApp as Appointment;
+        }
+      }
+
+      dispatchAppointmentAutomation({
+        accountId: input.accountId,
+        triggerType: "appointment_created",
+        contactId: oldApp.contact_id,
+        appointment: newApp,
+      });
+
+      return { ok: true, appointment: newApp };
+    }
+  } catch (rpcErr) {
+    console.warn("[rescheduleAppointment] atomic RPC failed, falling back to direct transaction:", rpcErr);
+  }
+
+  // 3. Fallback direct verification + insert
   const conflict = await hasStaffConflict({
     accountId: input.accountId,
-    staffId,
+    staffId: targetStaffId,
     startAt: newStart,
     endAt: newEnd,
     excludeAppointmentId: oldApp.id,
@@ -217,10 +351,13 @@ export async function rescheduleAppointment(
   });
 
   if (conflict) {
-    return { ok: false, error: "The new time slot has already been reserved", code: "SLOT_ALREADY_BOOKED" };
+    return {
+      ok: false,
+      code: "SLOT_ALREADY_BOOKED",
+      error: getActionableErrorMessage("SLOT_ALREADY_BOOKED"),
+    };
   }
 
-  // 3. Insert new appointment referencing old
   const { data: newApp, error: insertErr } = await db
     .from("appointments")
     .insert({
@@ -228,7 +365,7 @@ export async function rescheduleAppointment(
       contact_id: oldApp.contact_id,
       conversation_id: oldApp.conversation_id,
       service_id: oldApp.service_id,
-      staff_id: staffId,
+      staff_id: targetStaffId,
       start_at: newStart.toISOString(),
       end_at: newEnd.toISOString(),
       timezone: oldApp.timezone,
@@ -236,9 +373,7 @@ export async function rescheduleAppointment(
       source: oldApp.source,
       customer_name: oldApp.customer_name,
       customer_phone: oldApp.customer_phone,
-      notes: input.reason
-        ? `Rescheduled from ${oldApp.start_at}. Reason: ${input.reason}`
-        : oldApp.notes,
+      notes: oldApp.notes,
       rescheduled_from_id: oldApp.id,
       created_by: oldApp.created_by,
     })
@@ -246,22 +381,24 @@ export async function rescheduleAppointment(
     .single();
 
   if (insertErr || !newApp) {
-    return { ok: false, error: insertErr?.message || "Failed to create new appointment", code: "DATABASE_ERROR" };
+    return {
+      ok: false,
+      code: "DATABASE_ERROR",
+      error: insertErr?.message || "Failed to create rescheduled appointment",
+    };
   }
 
-  // 4. Mark old appointment as rescheduled
+  // Mark old appointment as rescheduled (explicitly NOT touching cancelled_at/cancelled_by)
   await db
     .from("appointments")
     .update({
       status: "rescheduled",
       rescheduled_to_id: newApp.id,
-      cancellation_reason: input.reason ?? "Rescheduled",
-      cancelled_by: input.cancelledBy ?? "user",
-      cancelled_at: new Date().toISOString(),
+      rescheduled_at: new Date().toISOString(),
+      reschedule_reason: rescheduleReason,
     })
     .eq("id", oldApp.id);
 
-  // Fire appointment_created automation for new appointment
   dispatchAppointmentAutomation({
     accountId: input.accountId,
     triggerType: "appointment_created",
@@ -274,11 +411,12 @@ export async function rescheduleAppointment(
 
 /**
  * Cancels an appointment, recording the reason, timestamp, and actor.
+ * Never deletes the historical appointment row.
  */
 export async function cancelAppointment(
   input: CancelAppointmentInput,
   client?: SupabaseClient,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; code?: AppointmentErrorCode }> {
   const db = client ?? supabaseAdmin();
 
   const { data: oldApp } = await db
@@ -289,7 +427,19 @@ export async function cancelAppointment(
     .single();
 
   if (!oldApp) {
-    return { ok: false, error: "Appointment not found" };
+    return {
+      ok: false,
+      code: "NOT_FOUND",
+      error: getActionableErrorMessage("NOT_FOUND"),
+    };
+  }
+
+  if (!canTransitionStatus(oldApp.status as AppointmentStatus, "cancelled")) {
+    return {
+      ok: false,
+      code: "INVALID_STATUS_TRANSITION",
+      error: `Cannot cancel an appointment that is currently ${oldApp.status}`,
+    };
   }
 
   const { error } = await db
@@ -304,10 +454,9 @@ export async function cancelAppointment(
     .eq("account_id", input.accountId);
 
   if (error) {
-    return { ok: false, error: error.message };
+    return { ok: false, code: "DATABASE_ERROR", error: error.message };
   }
 
-  // Fire appointment_cancelled automation
   dispatchAppointmentAutomation({
     accountId: input.accountId,
     triggerType: "appointment_cancelled",
@@ -320,23 +469,47 @@ export async function cancelAppointment(
 
 /**
  * Updates an appointment's status (completed, no_show, confirmed).
+ * Enforces centralized lifecycle transition rules.
  */
 export async function updateAppointmentStatus(
   appointmentId: string,
   accountId: string,
-  status: AppointmentStatus,
+  newStatus: AppointmentStatus,
   client?: SupabaseClient,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; code?: AppointmentErrorCode }> {
   const db = client ?? supabaseAdmin();
+
+  const { data: currentApp } = await db
+    .from("appointments")
+    .select("id, status")
+    .eq("id", appointmentId)
+    .eq("account_id", accountId)
+    .single();
+
+  if (!currentApp) {
+    return {
+      ok: false,
+      code: "NOT_FOUND",
+      error: getActionableErrorMessage("NOT_FOUND"),
+    };
+  }
+
+  if (!canTransitionStatus(currentApp.status as AppointmentStatus, newStatus)) {
+    return {
+      ok: false,
+      code: "INVALID_STATUS_TRANSITION",
+      error: `Cannot change status from ${currentApp.status} to ${newStatus}`,
+    };
+  }
 
   const { error } = await db
     .from("appointments")
-    .update({ status })
+    .update({ status: newStatus })
     .eq("id", appointmentId)
     .eq("account_id", accountId);
 
   if (error) {
-    return { ok: false, error: error.message };
+    return { ok: false, code: "DATABASE_ERROR", error: error.message };
   }
 
   return { ok: true };
@@ -358,26 +531,21 @@ function dispatchAppointmentAutomation({
 }) {
   if (!contactId) return;
 
-  // Run in background without blocking response
-  Promise.resolve().then(async () => {
-    try {
-      await runAutomationsForTrigger({
-        accountId,
-        triggerType,
-        contactId,
-        context: {
-          vars: {
-            appointment_id: appointment.id,
-            appointment_service: appointment.service?.name,
-            appointment_staff: appointment.staff?.name,
-            appointment_start_at: appointment.start_at,
-            appointment_end_at: appointment.end_at,
-            appointment_status: appointment.status,
-          },
-        },
-      });
-    } catch (e) {
-      console.warn("[dispatchAppointmentAutomation] failed:", e);
-    }
+  runAutomationsForTrigger({
+    accountId,
+    triggerType,
+    contactId,
+    context: {
+      vars: {
+        appointment_id: appointment.id,
+        appointment_service: appointment.service?.name,
+        appointment_staff: appointment.staff?.name,
+        appointment_start_at: appointment.start_at,
+        appointment_end_at: appointment.end_at,
+        appointment_status: appointment.status,
+      },
+    },
+  }).catch((err) => {
+    console.warn(`[dispatchAppointmentAutomation] ${triggerType} failed:`, err);
   });
 }

@@ -30,8 +30,8 @@ export async function POST(
         newStartAt: new_start_at,
         newEndAt: new_end_at,
         staffId: staff_id,
-        reason,
-        cancelledBy: ctx.userId,
+        rescheduleReason: body.reschedule_reason || reason,
+        reason: reason || body.reschedule_reason,
       },
       ctx.supabase,
     );
