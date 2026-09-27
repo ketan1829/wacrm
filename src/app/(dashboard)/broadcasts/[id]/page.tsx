@@ -34,13 +34,41 @@ import {
   Trash2,
   PlayCircle,
   RotateCcw,
+  Edit3,
+  Calendar,
+  Clock,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import {
   getBroadcastStatus,
   getRecipientStatus,
 } from '@/lib/broadcast-status';
 import { useTranslations } from 'next-intl';
+
+const COMMON_TIMEZONES = [
+  'UTC',
+  'Asia/Kolkata',
+  'Asia/Dubai',
+  'Asia/Singapore',
+  'Asia/Tokyo',
+  'Europe/London',
+  'Europe/Paris',
+  'Europe/Berlin',
+  'America/New_York',
+  'America/Chicago',
+  'America/Denver',
+  'America/Los_Angeles',
+  'Australia/Sydney',
+];
 
 interface StatCardProps {
   label: string;
@@ -163,6 +191,23 @@ export default function BroadcastDetailPage() {
   const [resumingScope, setResumingScope] = useState<
     'pending' | 'failed' | null
   >(null);
+
+  // Scheduling and draft editing state
+  const [editScheduleOpen, setEditScheduleOpen] = useState(false);
+  const [showSendNowConfirm, setShowSendNowConfirm] = useState(false);
+  const [editDate, setEditDate] = useState('');
+  const [editTime, setEditTime] = useState('');
+  const [editTz, setEditTz] = useState('UTC');
+  const [updatingSchedule, setUpdatingSchedule] = useState(false);
+
+  useEffect(() => {
+    if (broadcast?.scheduled_at) {
+      const d = new Date(broadcast.scheduled_at);
+      setEditDate(d.toISOString().split('T')[0]);
+      setEditTime(d.toTimeString().slice(0, 5));
+      setEditTz(broadcast.timezone || 'UTC');
+    }
+  }, [broadcast]);
 
   const fetchData = useCallback(async () => {
     try {
@@ -298,6 +343,63 @@ export default function BroadcastDetailPage() {
     router.push('/broadcasts');
   }
 
+  async function handleUpdateSchedule() {
+    if (!editDate || !editTime) {
+      toast.error('Please pick both date and time.');
+      return;
+    }
+    const sched = new Date(`${editDate}T${editTime}:00`);
+    if (sched.getTime() <= Date.now()) {
+      toast.error('Please select a future date and time.');
+      return;
+    }
+
+    setUpdatingSchedule(true);
+    try {
+      const res = await fetch(`/api/whatsapp/broadcast/${broadcastId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'update_schedule',
+          scheduled_at: sched.toISOString(),
+          timezone: editTz,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to update schedule');
+
+      toast.success('Broadcast schedule updated');
+      setEditScheduleOpen(false);
+      await fetchData();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Update failed');
+    } finally {
+      setUpdatingSchedule(false);
+    }
+  }
+
+  async function handleCancelSchedule() {
+    try {
+      const res = await fetch(`/api/whatsapp/broadcast/${broadcastId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'cancel_schedule' }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to cancel schedule');
+
+      toast.success('Scheduled broadcast cancelled and moved to draft');
+      await fetchData();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Cancel failed');
+    }
+  }
+
+  async function handleSendScheduledNow() {
+    setShowSendNowConfirm(false);
+    await handleResume('pending');
+  }
+
   if (loading) {
     return (
       <div className="flex h-64 items-center justify-center">
@@ -409,9 +511,84 @@ export default function BroadcastDetailPage() {
         )}
       </div>
 
+      {/* Draft State Banner */}
+      {broadcast.status === 'draft' && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-4">
+          <div>
+            <p className="font-medium text-foreground">Draft Broadcast</p>
+            <p className="text-xs text-muted-foreground">
+              This broadcast is saved as a draft. You can continue editing or send it immediately.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              onClick={() => router.push(`/broadcasts/new?draftId=${broadcast.id}`)}
+              className="bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              <Edit3 className="mr-1.5 h-3.5 w-3.5" />
+              Edit Draft
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Scheduled State Banner */}
+      {broadcast.status === 'scheduled' && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-500/30 bg-blue-500/5 p-4">
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-2 font-medium text-foreground text-sm">
+              <Calendar className="h-4 w-4 text-blue-400" />
+              <span>Scheduled for Delivery</span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Scheduled to send on{' '}
+              <strong className="text-foreground">
+                {broadcast.scheduled_at
+                  ? new Date(broadcast.scheduled_at).toLocaleString([], {
+                      dateStyle: 'medium',
+                      timeStyle: 'short',
+                    })
+                  : '—'}
+              </strong>{' '}
+              ({broadcast.timezone || 'UTC'}).
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setEditScheduleOpen(true)}
+              className="border-border text-foreground"
+            >
+              <Clock className="mr-1.5 h-3.5 w-3.5" />
+              Edit Schedule
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleCancelSchedule}
+              className="border-border text-muted-foreground hover:bg-muted"
+            >
+              Cancel Schedule
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => setShowSendNowConfirm(true)}
+              className="bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              <Send className="mr-1.5 h-3.5 w-3.5" />
+              Send Now
+            </Button>
+          </div>
+        </div>
+      )}
+
       {/* Resume / retry (issue #472). Only rendered when there is
-          actually something outstanding. */}
-      {(pendingCount > 0 || retryableCount > 0) && (
+          actually something outstanding and not draft/scheduled. */}
+      {broadcast.status !== 'scheduled' &&
+        broadcast.status !== 'draft' &&
+        (pendingCount > 0 || retryableCount > 0) && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-4">
           <div className="text-sm">
             <p className="font-medium text-foreground">
@@ -635,6 +812,108 @@ export default function BroadcastDetailPage() {
           </div>
         )}
       </div>
+
+      {/* Edit Schedule Dialog */}
+      <Dialog open={editScheduleOpen} onOpenChange={setEditScheduleOpen}>
+        <DialogContent className="border-border bg-popover sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-popover-foreground">Edit Delivery Schedule</DialogTitle>
+            <DialogDescription className="text-muted-foreground text-xs">
+              Change the target date, time, or timezone for this scheduled broadcast.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 py-2">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                Date
+              </label>
+              <Input
+                type="date"
+                min={new Date().toISOString().split('T')[0]}
+                value={editDate}
+                onChange={(e) => setEditDate(e.target.value)}
+                className="border-border bg-muted text-foreground text-xs"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                Time
+              </label>
+              <Input
+                type="time"
+                value={editTime}
+                onChange={(e) => setEditTime(e.target.value)}
+                className="border-border bg-muted text-foreground text-xs"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                Timezone
+              </label>
+              <select
+                value={editTz}
+                onChange={(e) => setEditTz(e.target.value)}
+                className="h-9 w-full rounded-lg border border-border bg-muted px-2.5 text-xs text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+              >
+                {COMMON_TIMEZONES.map((tz) => (
+                  <option key={tz} value={tz}>
+                    {tz}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setEditScheduleOpen(false)}
+              className="border-border text-muted-foreground"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleUpdateSchedule}
+              disabled={updatingSchedule || !editDate || !editTime}
+              className="bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              {updatingSchedule ? 'Updating...' : 'Save Schedule'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Send Scheduled Now Confirmation Dialog */}
+      <Dialog open={showSendNowConfirm} onOpenChange={setShowSendNowConfirm}>
+        <DialogContent className="border-border bg-popover sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-popover-foreground">Send Broadcast Now?</DialogTitle>
+            <DialogDescription className="text-muted-foreground text-xs pt-1">
+              This will cancel the scheduled send and begin delivering messages immediately to all{' '}
+              <strong className="text-foreground">{broadcast.total_recipients} recipients</strong>.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowSendNowConfirm(false)}
+              className="border-border text-muted-foreground"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSendScheduledNow}
+              className="bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              <Send className="mr-1.5 h-3.5 w-3.5" />
+              Confirm & Send Now
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
